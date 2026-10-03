@@ -1,0 +1,60 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: ros-display-ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    name: package-tests-debs-${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: amd64-focal
+            arch: amd64
+            distribution: focal
+            runner: ubuntu-24.04
+          - name: arm64-focal
+            arch: arm64
+            distribution: focal
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build, test and install-check Deb in controlled Noetic image
+        env:
+          BUILD_IMAGE: ghcr.io/xgc-team/xgc2-images/xgc2-build-focal-full-noetic:1.0.0@sha256:2d0ab240a669e59dc6e86e41806041a7f5d46751c787b5cbb225b10e1faed39b
+        run: |
+          set -euo pipefail
+          install -d .ci/build-manifests
+          .xgc2/scripts/build_debs_in_docker.sh \
+            --image "$BUILD_IMAGE" \
+            --work-dir "$RUNNER_TEMP/ros-display-${{ matrix.name }}" \
+            --output-dir "$GITHUB_WORKSPACE/debs"
+      - name: Create strict-v1 trusted build manifest
+        run: |
+          set -euo pipefail
+          product_version="$(awk '/^version:/ {print $2; exit}' .xgc2/product.yml)"
+          test -n "$product_version"
+          python3 .xgc2/scripts/xgc2_artifact_manifest.py build \
+            --deb-dir debs --output-dir .ci/build-manifests \
+            --product xgc2-ros-display --product-version "$product_version" \
+            --distribution "${{ matrix.distribution }}" --architecture "${{ matrix.arch }}" \
+            --source-sha "$GITHUB_SHA" --ci-run-id "$GITHUB_RUN_ID" \
+            --ci-workflow "$GITHUB_WORKFLOW" --ci-workflow-ref "$GITHUB_WORKFLOW_REF"
+      - name: Upload Deb and manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: xgc2-ros-display-debs-${{ matrix.name }}
+          path: |
+            debs/*.deb
+            .ci/build-manifests/*.json
+          retention-days: 14
+          include-hidden-files: true
+          if-no-files-found: error

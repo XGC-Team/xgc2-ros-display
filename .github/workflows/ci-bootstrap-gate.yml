@@ -1,0 +1,11 @@
+name: CI bootstrap gate
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  check:
+    uses: XGC-Team/xgc2-images/.github/workflows/reusable-check-ci-bootstrap.yml@master

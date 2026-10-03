@@ -1,0 +1,38 @@
+schema: xgc2.product.v1
+id: xgc2-ros-display
+name: XGC2 ROS Display
+version: 0.1.0-1
+kind: ros1-apt
+summary: Subscriber-gated byte-preserving ROS1 display topic copies, reusable library and node.
+ros:
+  distro: noetic
+  packages:
+  - xgc2_ros_display_relays
+apt:
+  distribution: focal
+  install:
+  - ros-noetic-xgc2-ros-display
+  packages:
+  - ros-noetic-xgc2-ros-display
+  package_distributions:
+    ros-noetic-xgc2-ros-display:
+    - focal
+  depends: []
+usage:
+  install: sudo apt install ros-noetic-xgc2-ros-display
+  smoke_test: /opt/ros/noetic/lib/xgc2_ros_display_relays/xgc2_display_relays '[]'
+ownership:
+  paths:
+  - /opt/ros/noetic/share/xgc2_ros_display_relays
+  - /opt/ros/noetic/include/xgc2_ros_display_relays
+  - /opt/ros/noetic/lib/libxgc2_ros_display_relays.so
+  - /opt/ros/noetic/lib/pkgconfig/xgc2_ros_display_relays.pc
+  - /opt/ros/noetic/lib/xgc2_ros_display_relays
+release:
+  repository: XGC-Team/xgc2-ros-display
+  ref: main
+  workflow: release.yml
+  ci_workflow: ci.yml
+  dependency_policy: {}
+  apt_versions:
+    focal: 0.1.0-1~focal

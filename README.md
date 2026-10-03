@@ -4,8 +4,8 @@ This ROS1 C++ product owns subscriber-gated display topic copies. Its reusable
 catkin library serves both an embedding ROS process and the thin standalone
 node. Source owner: [XGC-Team/xgc2-ros-display](https://github.com/XGC-Team/xgc2-ros-display).
 The implementation does no algorithm conversion and is independent of Runtime
-business plugins and Gazebo. Core consumer migration and APT packaging are
-separate work; this repository does not retain an alternate Python relay.
+business plugins and Gazebo. Core consumer migration is separate work; this repository does not retain an
+alternate Python relay.
 
 Authority: `xgc2/process-catalog/current/platform/lichtblick-display-relays.json`.
 Reviewed authority SHA-256: `0f955708788b410fc3f3f0cd97df83ac07ff4daf32e434dff84abe31ddf69e16`.
@@ -34,9 +34,9 @@ bytes may arrive later at a display consumer. Embedding owners must call stop
 from outside this private callback thread and keep their ROS context alive until
 it returns. Callback failures are reported by rethrowFailure for owner teardown.
 
-`xgc2_display_relays RELAYS_JSON [legacy_ros_prefix]` is the thin process entry;
-the optional old prefix argument is accepted but not used to locate code. ROS
-environment variables continue to select the master/IP. Empty lists wait for
+`xgc2_display_relays RELAYS_JSON` is the thin process entry. Missing or extra
+arguments fail before ROS initialization. ROS environment variables continue to
+select the master/IP. Empty lists wait for
 SIGTERM/SIGINT without initializing ROS or contacting a master. Nonempty owners
 stop and shut down their own process ROS context on those signals. No worker
 child exists to orphan. Process supervision retains its existing grace timeout.
@@ -84,3 +84,31 @@ formal viewer/Experiment/APT acceptance is claimed. Arm64 remains unverified.
 ROS API reference: [AdvertiseOptions](https://github.com/ros/ros_comm/blob/noetic-devel/clients/roscpp/include/ros/advertise_options.h)
 documents serialized header sequence rewriting; [serialization](https://github.com/ros/roscpp_core/blob/noetic-devel/roscpp_serialization/include/ros/serialization.h)
 provides the bounded streams used by the raw payload serializer.
+
+The first Noetic/Focal APT identity is `ros-noetic-xgc2-ros-display`
+`0.1.0-1~focal`; product version is `0.1.0-1`. One native package contains all
+four relay types, the shared library, node, headers and catkin exports. Native
+system-library requirements are derived with dpkg-shlibdeps. Noetic roscpp
+explicitly supplies the unversioned ROS runtime DSOs; generated message packages
+are required by the exported SDK. There are no internal XGC2 APT dependencies.
+
+Push and PR CI on main use native amd64/arm64 GitHub-hosted runners and the
+existing controlled Noetic 1.0.0 image, locked by multiarch digest above (amd64
+`b3e2b84d857d69c98aa37f4509890cd3d4c23c084c7b28fe7de84a8532b8b667`, arm64
+`2d28bb572abb63825dddbffa2b1ad9198e4b0b472aedd021783f906e99c72d78`). Source
+binds are read-only; writable build/output binds use the calling UID/GID. Build,
+source tests, new argv rejection controls and installation run within private
+containers without external network. Installed-Deb gates check the native DSO
+and executable, compile/link an independent SDK consumer, and exercise the
+actual node across processes with all four serialized payloads and Stop. CI
+retains only Debs and strict `xgc2.build-artifact.v1` manifests for 14 days.
+
+```sh
+.xgc2/scripts/build_debs_in_docker.sh --work-dir /tmp/ros-display-build --output-dir "$PWD/debs"
+```
+
+`release.yml` accepts only the existing central prepare/compatibility contract;
+it has no production publishing credentials or index writer. Ordinary releases
+reuse exact-source push CI artifacts through the central xgc2-devops release
+orchestrator. CI/package preparation does not assert production APT visibility,
+Core consumer migration, or formal viewer/Experiment acceptance.

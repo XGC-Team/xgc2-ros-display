@@ -12,7 +12,7 @@ void stopSignal(int) { stopped = 1; }
 }
 int main(int argc, char** argv) {
   try {
-    if (argc < 2 || argc > 3) throw std::invalid_argument("usage: xgc2_display_relays RELAYS_JSON [legacy_ros_prefix]");
+    if (argc != 2) throw std::invalid_argument("usage: xgc2_display_relays RELAYS_JSON");
     auto specs = xgc2_ros_display_relays::parseRelaySpecs(argv[1]);
     std::signal(SIGINT, stopSignal); std::signal(SIGTERM, stopSignal);
     if (specs.empty()) {
