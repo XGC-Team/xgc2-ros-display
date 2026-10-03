@@ -17,8 +17,9 @@ install -d "$work_dir" "$output_dir"
 work_dir="$(cd "$work_dir" && pwd)"
 output_dir="$(cd "$output_dir" && pwd)"
 # Read-only source; every writable host bind remains owned by the caller.
-docker run --rm --network none --cpus 1 --user "$(id -u):$(id -g)"   -e HOME=/tmp -e ROS_HOME=/tmp/ros-home -e ROS_LOG_DIR=/tmp/ros-log   -e XGC2_RUN_SOURCE_TESTS="${XGC2_RUN_SOURCE_TESTS:-1}"   -v "$repo_root:/source:ro" -v "$work_dir:/work" -v "$output_dir:/out" "$image" bash -c '
+docker run --rm --network none --cpus 1 --user "$(id -u):$(id -g)"   -e HOME=/tmp -e ROS_HOME=/tmp/ros-home -e ROS_LOG_DIR=/tmp/ros-log -e ROS_IP=127.0.0.1   -e XGC2_RUN_SOURCE_TESTS="${XGC2_RUN_SOURCE_TESTS:-1}"   -v "$repo_root:/source:ro" -v "$work_dir:/work" -v "$output_dir:/out" "$image" bash -c '
     set -eo pipefail
+    unset ROS_HOSTNAME
     source /opt/ros/noetic/setup.bash
     set -u
     cmake -S /source -B /work/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/ros/noetic -DCATKIN_ENABLE_TESTING=ON
@@ -33,8 +34,9 @@ docker run --rm --network none --cpus 1 --user "$(id -u):$(id -g)"   -e HOME=/tm
     /source/.xgc2/scripts/package_debs.sh --install-root /work/install --output-dir /out
   '
 # Installation mutates only the ephemeral container, never a host prefix.
-docker run --rm --network none --cpus 1   -e HOME=/tmp -e ROS_HOME=/tmp/ros-home -e ROS_LOG_DIR=/tmp/ros-log   -v "$repo_root:/source:ro" -v "$output_dir:/out:ro" "$image" bash -c '
+docker run --rm --network none --cpus 1   -e HOME=/tmp -e ROS_HOME=/tmp/ros-home -e ROS_LOG_DIR=/tmp/ros-log -e ROS_IP=127.0.0.1   -v "$repo_root:/source:ro" -v "$output_dir:/out:ro" "$image" bash -c '
     set -eo pipefail
+    unset ROS_HOSTNAME
     dpkg -i /out/*.deb
     source /opt/ros/noetic/setup.bash
     set -u
