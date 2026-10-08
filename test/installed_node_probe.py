@@ -434,12 +434,22 @@ def main(binary):
             require(restored['appliedRevision'] == 1 and restored['rates'] == default_rates,
                     'ephemeral rate state was falsely persisted')
             require(rpc('GET', '/v1/status')['instanceCount'] == 0, 'restart resurrected old native instances')
-            rpc('PUT', '/v1/instances/crash-owned', instance())
+            displayed[0].clear()
+            crash_viewer = rospy.Subscriber('/xgc/display' + sources[0], rospy.AnyMsg,
+                lambda message: displayed[0].append(bytes(message._buff)), queue_size=100)
+            rpc('PUT', '/v1/instances/crash-owned', instance(relays=relay_specs[:1], scene=False))
+            wait(lambda: source_pubs[0].get_num_connections() >= 2 and crash_viewer.get_num_connections(),
+                 'crash fixture did not activate its native relay')
+            packets(5)
+            wait(lambda: bool(displayed[0]), 'native relay carried no bytes before crash')
+            require(all(sample in original[0] for sample in displayed[0]), 'pre-crash relay changed source bytes')
             rpc('PUT', '/v1/rates', low)
             crash_incarnation = instance_id
             restarted.send_signal(signal.SIGKILL);restarted.wait(timeout=3)
             require(restarted.returncode == -signal.SIGKILL, 'crash fixture did not kill its owned provider')
             require(os.path.exists(probe_socket), 'crash fixture did not retain the stale socket')
+            wait(lambda: source_pubs[0].get_num_connections() == 1 and not crash_viewer.get_num_connections(),
+                 'killed native relay retained live data connections')
             recovered = subprocess.Popen([binary, '--socket', probe_socket,
                 '--target-id', 'private-probe', '--callback-workers', '2', '--world-clock', 'simulation'],
                 stdout=logfile, stderr=logfile, start_new_session=True)
@@ -463,8 +473,21 @@ def main(binary):
             restored = rpc('GET', '/v1/rates')
             require(restored['appliedRevision'] == 1 and restored['rates'] == default_rates,
                     'crash recovery imported ephemeral rate state')
-            rpc('PUT', '/v1/instances/recovered-zero', instance())
-            rpc('DELETE', '/v1/instances/recovered-zero')
+            require(source_pubs[0].get_num_connections() == 1 and not crash_viewer.get_num_connections(),
+                    'replacement silently reactivated the old native relay')
+            displayed[0].clear()
+            rpc('PUT', '/v1/instances/recovered-relay', instance(relays=relay_specs[:1], scene=False))
+            wait(lambda: source_pubs[0].get_num_connections() >= 2 and crash_viewer.get_num_connections(),
+                 'replacement failed explicit native relay activation')
+            time.sleep(.1)
+            require(not displayed[0], 'replacement replayed a source sample from the killed provider')
+            packets(5)
+            wait(lambda: bool(displayed[0]), 'replacement native relay did not deliver fresh bytes')
+            require(all(sample in original[0] for sample in displayed[0]), 'replacement relay changed fresh bytes')
+            rpc('DELETE', '/v1/instances/recovered-relay')
+            wait(lambda: source_pubs[0].get_num_connections() == 1 and not crash_viewer.get_num_connections(),
+                 'replacement DELETE did not fence its native relay')
+            crash_viewer.unregister()
             recovered.send_signal(signal.SIGTERM);recovered.wait(timeout=3)
             require(recovered.returncode == 0 and not os.path.exists(probe_socket),
                     'crash replacement failed native operation or endpoint cleanup')
@@ -475,6 +498,7 @@ def main(binary):
                 zero_robot_readiness=True, fixed_callback_workers=2, publisher_workers=1,
                 restart_incarnation_fenced=True, rate_cas_conflict=True, ephemeral_restart=True,
                 sigkill_stale_endpoint_recovered=True, crash_incarnation_fenced=True,
+                sigkill_native_relay_fenced=True, crash_relay_no_replay=True,
                 no_child_processes=True), sort_keys=True))
             rospy.signal_shutdown('private probe complete')
         except Exception:
