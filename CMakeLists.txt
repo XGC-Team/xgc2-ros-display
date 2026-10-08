@@ -1,32 +1,37 @@
-cmake_minimum_required(VERSION 3.10)
-project(xgc2_ros_visualizer VERSION 0.3.0 LANGUAGES CXX)
+cmake_minimum_required(VERSION 3.16)
+project(xgc2_ros_visualizer VERSION 0.4.0 LANGUAGES CXX)
 find_package(catkin REQUIRED COMPONENTS roscpp roslib urdf sensor_msgs nav_msgs geometry_msgs
   foxglove_msgs mavros_msgs std_msgs tf2_ros visualization_msgs xgc2_robot_visualization)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(JSONCPP REQUIRED IMPORTED_TARGET jsoncpp)
 find_package(Threads REQUIRED)
+find_package(XgcXrpc 0.1 CONFIG REQUIRED)
 catkin_package(INCLUDE_DIRS include LIBRARIES xgc2_ros_visualizer_contract xgc2_ros_visualizer_runtime
   CATKIN_DEPENDS roscpp roslib urdf sensor_msgs nav_msgs geometry_msgs foxglove_msgs mavros_msgs
   std_msgs tf2_ros visualization_msgs xgc2_robot_visualization DEPENDS JSONCPP)
 add_library(xgc2_ros_visualizer_contract SHARED src/render/scene_contract.cpp)
 add_library(xgc2_ros_visualizer_rpc STATIC src/server/rpc.cpp)
 set_target_properties(xgc2_ros_visualizer_rpc PROPERTIES POSITION_INDEPENDENT_CODE ON)
-add_library(xgc2_ros_visualizer_runtime SHARED src/runtime/config.cpp src/runtime/bootstrap.cpp src/runtime/input_pool.cpp
+target_compile_features(xgc2_ros_visualizer_rpc PRIVATE cxx_std_20)
+target_link_libraries(xgc2_ros_visualizer_rpc PRIVATE XgcXrpc::http XgcXrpc::policy XgcXrpc::diagnostics)
+add_library(xgc2_ros_visualizer_runtime SHARED src/runtime/config.cpp src/runtime/instance_input.cpp src/runtime/input_pool.cpp
   src/runtime/descriptions.cpp src/runtime/instance.cpp src/relay/relay.cpp src/server/server.cpp)
 foreach(target xgc2_ros_visualizer_contract xgc2_ros_visualizer_rpc xgc2_ros_visualizer_runtime)
-  target_compile_features(${target} PUBLIC cxx_std_14)
   target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
   target_include_directories(${target} PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include> ${catkin_INCLUDE_DIRS})
   target_link_libraries(${target} PUBLIC PkgConfig::JSONCPP Threads::Threads)
 endforeach()
+foreach(target xgc2_ros_visualizer_contract xgc2_ros_visualizer_runtime)
+  target_compile_features(${target} PUBLIC cxx_std_14)
+endforeach()
 target_link_libraries(xgc2_ros_visualizer_contract PUBLIC ${catkin_LIBRARIES})
-target_link_libraries(xgc2_ros_visualizer_runtime PUBLIC xgc2_ros_visualizer_contract ${catkin_LIBRARIES}
-  PRIVATE xgc2_ros_visualizer_rpc)
+target_link_libraries(xgc2_ros_visualizer_runtime PUBLIC xgc2_ros_visualizer_contract ${catkin_LIBRARIES})
 add_dependencies(xgc2_ros_visualizer_contract ${catkin_EXPORTED_TARGETS})
 add_dependencies(xgc2_ros_visualizer_runtime ${catkin_EXPORTED_TARGETS})
-add_executable(xgc2_ros_visualizer_node src/main.cpp)
-target_link_libraries(xgc2_ros_visualizer_node PRIVATE xgc2_ros_visualizer_runtime xgc2_ros_visualizer_rpc)
+add_executable(xgc2_ros_visualizer_node src/main.cpp src/server/routes.cpp)
+target_compile_features(xgc2_ros_visualizer_node PRIVATE cxx_std_20)
+target_link_libraries(xgc2_ros_visualizer_node PRIVATE xgc2_ros_visualizer_runtime xgc2_ros_visualizer_rpc XgcXrpc::bootstrap)
 install(TARGETS xgc2_ros_visualizer_contract xgc2_ros_visualizer_runtime xgc2_ros_visualizer_node
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
@@ -43,6 +48,7 @@ if(CATKIN_ENABLE_TESTING)
   endif()
   catkin_add_gtest(rpc_transport_test test/rpc_transport_test.cpp)
   if(TARGET rpc_transport_test)
-    target_link_libraries(rpc_transport_test xgc2_ros_visualizer_rpc gtest_main)
+    target_compile_features(rpc_transport_test PRIVATE cxx_std_20)
+    target_link_libraries(rpc_transport_test xgc2_ros_visualizer_rpc XgcXrpc::http gtest_main)
   endif()
 endif()

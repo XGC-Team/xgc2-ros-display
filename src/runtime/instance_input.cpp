@@ -1,4 +1,4 @@
-#include <xgc2_ros_visualizer/bootstrap.hpp>
+#include <xgc2_ros_visualizer/instance_input.hpp>
 #include <xgc2_ros_visualizer/config.hpp>
 #include <algorithm>
 #include <cerrno>
@@ -6,13 +6,10 @@
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
-#include <fcntl.h>
 #include <map>
 #include <regex>
 #include <set>
 #include <stdexcept>
-#include <sys/stat.h>
-#include <unistd.h>
 namespace xgc2_ros_visualizer {
 namespace {
 std::string text(const Json::Value& value,const std::string& name) {
@@ -50,22 +47,33 @@ std::string heightColor(const Json::Value& settings,const Json::Value& robot,con
   return palette[static_cast<std::size_t>(found-peers.begin())%palette.size()];
 }
 }
-Bootstrap projectBootstrap(const Json::Value& value) {
-  if(!value.isObject())throw std::invalid_argument("bootstrap must be an object");
-  const std::set<std::string> fields{"instanceId","robots","context","settings","displayRelays"};auto keys=value.getMemberNames();
-  if(std::set<std::string>(keys.begin(),keys.end())!=fields)throw std::invalid_argument("bootstrap requires exactly instanceId/robots/context/settings/displayRelays");
-  Bootstrap result;result.instance_id=text(value["instanceId"],"instanceId");
-  static const std::regex identity("^[A-Za-z0-9_.-]{1,128}$"),ns("^/[A-Za-z_][A-Za-z0-9_]{0,126}$");
-  if(!std::regex_match(result.instance_id,identity))throw std::invalid_argument("invalid bootstrap instanceId");
+Json::Value projectInstanceInput(const Json::Value& value) {
+  if(!value.isObject())throw std::invalid_argument("instance input must be an object");
+  const std::set<std::string> fields{"robots","context","settings","displayRelays"};auto keys=value.getMemberNames();
+  if(std::set<std::string>(keys.begin(),keys.end())!=fields)throw std::invalid_argument("instance input requires exactly robots/context/settings/displayRelays");
+  static const std::regex ns("^/[A-Za-z_][A-Za-z0-9_]{0,126}$");
   const auto& context=value["context"];const auto& panel=value["settings"];
-  if(!context.isObject()||!panel.isObject()||!value["robots"].isArray()||value["robots"].size()>256)throw std::invalid_argument("bootstrap context/settings/robots types are invalid");
+  if(!context.isObject()||!panel.isObject()||!value["robots"].isArray()||value["robots"].size()>256)throw std::invalid_argument("instance context/settings/robots types are invalid");
   const auto mode=text(context["runMode"],"context.runMode"),clock=text(context["worldClock"],"context.worldClock");
   if(mode!="simulation"&&mode!="physical"&&mode!="hybrid")throw std::invalid_argument("invalid frozen runMode");
   if(clock!="simulation"&&clock!="wall")throw std::invalid_argument("invalid frozen worldClock");
-  auto& request=result.request;request["robots"]=Json::Value(Json::arrayValue);request["descriptions"]=Json::Value(Json::arrayValue);request["displayRelays"]=Json::Value(Json::arrayValue);
+  Json::Value request;request["robots"]=Json::Value(Json::arrayValue);request["descriptions"]=Json::Value(Json::arrayValue);request["displayRelays"]=Json::Value(Json::arrayValue);
   request["worldBoundary"]=context["worldBoundary"];auto& settings=request["settings"];
   settings["frame_id"]="world";settings["use_sim_time"]=clock=="simulation";
   settings["publish_markers"]=false;settings["publish_transforms"]=true;settings["publish_scene_update"]=true;settings["publish_scene_paths"]=false;settings["publish_paths"]=true;
+  // Publication controls are product data, independent of the frozen Viewer
+  // style/context fields. This preserves explicit relay-only and ground-scene
+  // controls without accepting the retired projected wire document.
+  if(panel.isMember("publication")) {
+    const auto& publication=panel["publication"];
+    if(!publication.isObject())throw std::invalid_argument("settings.publication must be an object");
+    const std::map<std::string,std::string> fields{{"markers","publish_markers"},{"transforms","publish_transforms"},{"scene","publish_scene_update"},{"scenePaths","publish_scene_paths"},{"paths","publish_paths"},{"groundScene","track_ugv"}};
+    for(const auto& field:publication.getMemberNames()) {
+      const auto target=fields.find(field);
+      if(target==fields.end()||!publication[field].isBool())throw std::invalid_argument("unknown or nonboolean publication control");
+      settings[target->second]=publication[field];
+    }
+  }
   settings["scene_update_topic"]="/xgc/scene";settings["transform_topic"]="/xgc/tf";
   const std::pair<const char*,const char*> style[]={{"markerColor","marker_color"},{"worldBoundaryMode","world_boundary_mode"},{"labelScaleInvariant","label_scale_invariant"},{"labelFontSizeMeters","label_font_size_meters"},{"labelFontSizePixels","label_font_size_pixels"},{"markerOpacity","marker_opacity"},{"uavLabelOffset","uav_label_offset"},{"scoutLabelOffset","scout_label_offset"},{"mecanumLabelOffset","mecanum_label_offset"}};
   for(const auto& field:style)if(panel.isMember(field.first))settings[field.second]=panel[field.first];
@@ -119,20 +127,11 @@ Bootstrap projectBootstrap(const Json::Value& value) {
   if(!value["displayRelays"].isArray())throw std::invalid_argument("displayRelays must be an array");
   for(const auto& relay:value["displayRelays"]) {
     if(!relay.isObject())throw std::invalid_argument("display relay must be an object");
-    const std::set<std::string> allowed{"source","topic","messageType","maxRateHz","robotKind"};for(const auto& field:relay.getMemberNames())if(!allowed.count(field))throw std::invalid_argument("unknown display relay field");
+    const std::set<std::string> allowed{"source","topic","messageType"};const auto fields=relay.getMemberNames();if(std::set<std::string>(fields.begin(),fields.end())!=allowed)throw std::invalid_argument("display relay requires exactly source/topic/messageType");
     Json::Value projected;projected["source"]=text(relay["source"],"relay source");projected["topic"]=text(relay["topic"],"relay topic");projected["messageType"]=text(relay["messageType"],"relay messageType");
     std::string kind="global";const auto source=projected["source"].asString();for(const auto& item:classes)if(source.compare(0,item.first.size()+1,item.first+"/")==0)kind=item.second;
     projected["robotKind"]=kind;request["displayRelays"].append(projected);
   }
-  parseInstance(request);return result;
-}
-Bootstrap readBootstrap(const std::string& file) {
-  const int fd=open(file.c_str(),O_RDONLY|O_CLOEXEC|O_NOFOLLOW);
-  if(fd<0)throw std::invalid_argument("cannot open initial_instance_file without following symlinks");
-  struct Close{int fd;~Close(){close(fd);}}close_file{fd};struct stat metadata{};
-  if(fstat(fd,&metadata)!=0||!S_ISREG(metadata.st_mode)||metadata.st_size<=0||metadata.st_size>1024*1024)throw std::invalid_argument("initial_instance_file must be a nonempty regular file <=1 MiB");
-  std::string contents(static_cast<std::size_t>(metadata.st_size),'\0');std::size_t offset=0;
-  while(offset<contents.size()) {auto count=read(fd,&contents[offset],contents.size()-offset);if(count<0&&errno==EINTR)continue;if(count<=0)throw std::invalid_argument("initial_instance_file is truncated");offset+=static_cast<std::size_t>(count);}
-  return projectBootstrap(parseJson(contents));
+  parseInstance(request);return request;
 }
 } // namespace xgc2_ros_visualizer

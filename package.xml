@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <package format="2">
-  <name>xgc2_ros_visualizer</name><version>0.3.0</version>
+  <name>xgc2_ros_visualizer</name><version>0.4.0</version>
   <description>Single-process ROS visualization server with Run-owned instances and kind/channel publication rates.</description>
   <maintainer email="867768510@qq.com">XGC Team</maintainer><license>MIT</license>
   <buildtool_depend>catkin</buildtool_depend>
@@ -10,6 +10,7 @@
   <depend>tf2_ros</depend><depend>visualization_msgs</depend><depend>xgc2_robot_visualization</depend>
   <exec_depend>fs150_description</exec_depend><exec_depend>scout_description</exec_depend>
   <exec_depend>mecanum_description</exec_depend>
+  <build_depend>libxgc2-xrpc-dev</build_depend><exec_depend>libxgc2-xrpc1</exec_depend>
   <build_depend>libjsoncpp-dev</build_depend><exec_depend>libjsoncpp1</exec_depend>
   <build_export_depend>libjsoncpp-dev</build_export_depend>
   <test_depend>rostest</test_depend><test_depend>rosunit</test_depend>

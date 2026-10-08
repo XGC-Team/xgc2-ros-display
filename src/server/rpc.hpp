@@ -4,6 +4,8 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <json/json.h>
 
@@ -18,24 +20,36 @@ using RpcHandler = std::function<RpcReply(const std::string& method,
                                           const std::string& path,
                                           const Json::Value& body)>;
 
-// One Unix HTTP/JSON control loop, independent of ROS and domain state.
-// Construction binds an absent absolute socket path with permissions 0600.
-// Each connection carries one request and is then closed. Limits are fixed:
-// 32 clients, 16 KiB headers, 1 MiB JSON bodies/replies, 5 s client lifetime.
-// The handler runs synchronously on the run() thread; it must be bounded and
-// must not wait for another RPC request on this server.
+struct RpcOptions {
+  std::string target_id;
+  std::string instance_id;
+  std::string ros_home;
+  std::string ros_log_dir;
+  // Borrowed resolved runtime-directory grant; the shared host duplicates it.
+  int retained_parent_fd{-1};
+  std::vector<std::pair<std::string, std::string>> environment;
+};
+
+// A C++14 facade for the C++20 XRPC host, without ROS or SDK types in its ABI.
+// One fixed domain worker owns the handler. Its preallocated handoff is bounded
+// by XRPC admission, and retained replies keep the endpoint lease until actual
+// work ends. Runtime policy is resolved once from the supplied startup snapshot.
 class RpcServer {
  public:
-  RpcServer(std::string socket_path, RpcHandler handler);
+  RpcServer(std::string socket_path, RpcHandler handler, RpcOptions options,
+            std::function<void()> quiesce_native = {});
   ~RpcServer();
+  static std::string newInstanceId();
 
   RpcServer(const RpcServer&) = delete;
   RpcServer& operator=(const RpcServer&) = delete;
   RpcServer(RpcServer&&) = delete;
   RpcServer& operator=(RpcServer&&) = delete;
 
-  // Call once. Stop is checked at least every 100 ms between handler calls.
-  // The caller must let run() return before destroying the server.
+  // Call once. Quiesce the domain worker and native owner before SDK drain
+  // releases the endpoint lease. The native callback's captures outlive this host.
+  // Return only after both are quiescent. In-progress
+  // native work is never represented as rolled back by transport cancellation.
   void run(const std::atomic<bool>& stopping);
   void stop() noexcept;
   const std::string& socket_path() const noexcept;

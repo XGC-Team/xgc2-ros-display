@@ -1,480 +1,354 @@
 #include "rpc.hpp"
-
+#include <xgc2/xrpc/bounded_output.hpp>
+#include <xgc2/xrpc/http.hpp>
+#include <xgc2/xrpc/diagnostics.hpp>
+#include <xgc2/xrpc/runtime_policy.hpp>
 #include <algorithm>
-#include <cerrno>
 #include <chrono>
-#include <cstring>
-#include <limits>
-#include <ostream>
+#include <condition_variable>
+#include <mutex>
+#include <optional>
+#include <regex>
 #include <stdexcept>
-#include <streambuf>
+#include <thread>
 #include <utility>
-#include <vector>
-
-#include <poll.h>
-#include <sys/socket.h>
-#include <sys/stat.h>
-#include <sys/un.h>
-#include <unistd.h>
 
 namespace xgc2_ros_visualizer {
 namespace {
-using Clock = std::chrono::steady_clock;
-constexpr std::size_t kMaxClients = 32;
-constexpr std::size_t kMaxHeaderBytes = 16 * 1024;
-constexpr std::size_t kMaxBodyBytes = 1024 * 1024;
-constexpr std::size_t kIoBudget = 64 * 1024;
-constexpr int kPollMs = 100;
-constexpr int kClientLifetimeMs = 5000;
-
-Json::Value error_body(const char* message) {
-  Json::Value value(Json::objectValue);
-  value["ok"] = false;
-  value["error"] = message;
-  return value;
+using namespace xgc2::xrpc;
+RuntimePolicy resolvePolicy(const RpcOptions& options) {
+  RuntimePolicyOptions input;
+  input.environment = options.environment;
+  input.capabilities.push_back("diagnostics");
+  input.default_source = "ros-visualizer control host";
+  input.defaults = {{"HOST_MAX_CONNECTIONS", "32"}, {"HOST_MAX_IN_FLIGHT", "32"},
+      {"MAX_HEADER_BYTES", "16384"}, {"MAX_REQUEST_BYTES", "1048576"},
+      {"MAX_RESPONSE_BYTES", "1048576"}, {"CALL_TIMEOUT_MS", "5000"},
+      {"HEADER_TIMEOUT_MS", "5000"}, {"IDLE_TIMEOUT_MS", "5000"},
+      {"SHUTDOWN_TIMEOUT_MS", "5000"}};
+  // Product memory ceilings constrain the common policy, without another set
+  // of defaults or silently clamping a deployment's requested value.
+  input.ceilings = {{"HOST_MAX_CONNECTIONS", 32}, {"HOST_MAX_IN_FLIGHT", 32},
+      {"MAX_HEADER_BYTES", 16384}, {"MAX_REQUEST_BYTES", 1048576},
+      {"MAX_RESPONSE_BYTES", 1048576}, {"CALL_TIMEOUT_MS", 5000},
+      {"HEADER_TIMEOUT_MS", 5000}, {"IDLE_TIMEOUT_MS", 5000},
+      {"SHUTDOWN_TIMEOUT_MS", 5000}};
+  return resolve_runtime_policy(input);
 }
-
-bool token_char(unsigned char c) {
-  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-         (c >= '0' && c <= '9') || (c != 0 && std::strchr("!#$%&'*+-.^_`|~", c));
+UnixOptions socketOptions(std::string path) {
+  UnixOptions result;
+  result.path = std::move(path);
+  result.existing = ExistingPath::ReclaimUnreachable;
+  return result;
 }
-
-std::string lower_ascii(std::string value) {
-  for (char& c : value) {
-    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
+Json::Value policyJson(const RuntimePolicySnapshot& policy) {
+  Json::Value result;
+  result["revision"] = Json::UInt64(policy.revision);
+  for (const auto& field : policy.entries()) {
+    auto& output = result["fields"][std::string(field.name)];
+    if (const auto* integer = std::get_if<std::int64_t>(&field.value))
+      output["value"] = Json::Int64(*integer);
+    else output["value"] = std::get<std::string>(field.value);
+    output["source"] = std::string(field.source);
+    output["sourceDetail"] = field.source_detail;
+    output["dynamic"] = field.dynamic;
+    output["unit"] = std::string(field.unit);
+    if (field.ceiling) output["ceiling"] = Json::Int64(*field.ceiling);
   }
-  return value;
+  return result;
 }
-
-std::string trim_ows(const std::string& value) {
-  const auto first = value.find_first_not_of(" \t");
-  if (first == std::string::npos) return {};
-  const auto last = value.find_last_not_of(" \t");
-  return value.substr(first, last - first + 1);
+Json::Value parseRequest(const std::string& text) {
+  if (text.empty()) return Json::Value();
+  Json::CharReaderBuilder builder;
+  builder["allowComments"] = false;
+  builder["collectComments"] = false;
+  builder["allowTrailingCommas"] = false;
+  builder["rejectDupKeys"] = true;
+  builder["failIfExtra"] = true;
+  builder["allowSpecialFloats"] = false;
+  builder["stackLimit"] = 64;
+  std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
+  Json::Value result;
+  std::string detail;
+  if (!reader->parse(text.data(), text.data() + text.size(), &result, &detail))
+    throw std::invalid_argument("invalid JSON request");
+  return result;
 }
-
-const char* reason(int status) {
-  switch (status) {
-    case 200: return "OK";
-    case 201: return "Created";
-    case 202: return "Accepted";
-    case 204: return "No Content";
-    case 304: return "Not Modified";
-    case 400: return "Bad Request";
-    case 404: return "Not Found";
-    case 405: return "Method Not Allowed";
-    case 409: return "Conflict";
-    case 413: return "Payload Too Large";
-    case 415: return "Unsupported Media Type";
-    case 422: return "Unprocessable Entity";
-    case 431: return "Request Header Fields Too Large";
-    case 500: return "Internal Server Error";
-    case 503: return "Service Unavailable";
-    default: return "Response";
+void complete(const HttpReply& reply, RpcReply result, std::size_t limit) {
+  BoundedOutput output(limit);
+  Json::StreamWriterBuilder builder;
+  builder["indentation"] = "";
+  std::unique_ptr<Json::StreamWriter> writer(builder.newStreamWriter());
+  writer->write(result.body, &output.stream());
+  if (!output.good()) {
+    reply.complete(http_error(500, "resource_exhausted", "JSON response exceeds limit"));
+    return;
   }
+  HttpResponse response;
+  response.status = result.status;
+  response.headers.emplace_back("Content-Type", "application/json");
+  response.body = output.value();
+  reply.complete(std::move(response));
 }
-
-// JsonCpp writes directly into a bounded stream instead of first allocating an
-// unbounded serialized response string supplied by the domain handler.
-class JsonBuffer : public std::streambuf {
- public:
-  std::string value;
-
- protected:
-  std::streamsize xsputn(const char* data, std::streamsize length) override {
-    const auto available = kMaxBodyBytes - value.size();
-    const auto count = std::min<std::size_t>(available,
-        static_cast<std::size_t>(length));
-    value.append(data, count);
-    return static_cast<std::streamsize>(count);
-  }
-  int_type overflow(int_type c) override {
-    if (traits_type::eq_int_type(c, traits_type::eof()))
-      return traits_type::not_eof(c);
-    if (value.size() == kMaxBodyBytes) return traits_type::eof();
-    value.push_back(traits_type::to_char_type(c));
-    return c;
-  }
-};
-
-std::string response(RpcReply reply) {
-  if (reply.status < 200 || reply.status > 599)
-    reply = {500, error_body("invalid response status")};
-  JsonBuffer buffer;
-  if (reply.status != 204 && reply.status != 304) {
-    Json::StreamWriterBuilder builder;
-    builder["indentation"] = "";
-    std::unique_ptr<Json::StreamWriter> writer(builder.newStreamWriter());
-    std::ostream output(&buffer);
-    writer->write(reply.body, &output);
-    if (!output.good()) {
-      reply.status = 500;
-      buffer.value = "{\"ok\":false,\"error\":\"response exceeds limit\"}";
-    }
-  }
-  return "HTTP/1.1 " + std::to_string(reply.status) + " " + reason(reply.status) +
-      "\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: " +
-      std::to_string(buffer.value.size()) + "\r\n\r\n" + buffer.value;
 }
-}  // namespace
 
 class RpcServer::Impl {
  public:
-  struct Client {
-    int fd;
-    Clock::time_point deadline;
-    std::string input;
-    std::string output;
-    std::string method;
-    std::string path;
-    std::size_t header_bytes = 0;
-    std::size_t body_bytes = 0;
-    std::size_t sent = 0;
-    bool headers_ready = false;
-    bool responding = false;
-  };
-
-  Impl(std::string path, RpcHandler handler)
-      : path_(std::move(path)), handler_(std::move(handler)) {
+  Impl(std::string path, RpcHandler handler, RpcOptions options, std::function<void()> quiesce_native)
+      : policy_(resolvePolicy(options)), limits_(http_limits(policy_)),
+        handler_(std::move(handler)), slots_(limits_.inflight),
+        diagnostics_(policy_),
+        quiesce_native_(std::move(quiesce_native)),
+        host_(socketOptions(path), [this](HttpRequest request, HttpReply reply) {
+          dispatch(std::move(request), std::move(reply));
+        }, limits_, HttpIdentity{options.instance_id, {"/v1/describe"}}, options.retained_parent_fd) {
     if (!handler_) throw std::invalid_argument("RPC handler is required");
-    if (path_.empty() || path_[0] != '/' ||
-        path_.size() >= sizeof(sockaddr_un::sun_path) ||
-        path_.find('\0') != std::string::npos)
-      throw std::invalid_argument("RPC socket must be a short absolute path");
-    struct stat existing{};
-    if (::lstat(path_.c_str(), &existing) == 0)
-      throw std::runtime_error("RPC socket path already exists");
-    if (errno != ENOENT) throw std::runtime_error("RPC socket path is unavailable");
-    listener_ = ::socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-    if (listener_ < 0) throw std::runtime_error("RPC socket creation failed");
-    try {
-      sockaddr_un address{};
-      address.sun_family = AF_UNIX;
-      std::memcpy(address.sun_path, path_.c_str(), path_.size() + 1);
-      if (::bind(listener_, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0)
-        throw std::runtime_error("RPC socket bind failed; path must be absent");
-      struct stat bound{};
-      if (::lstat(path_.c_str(), &bound) != 0 || !S_ISSOCK(bound.st_mode))
-        throw std::runtime_error("RPC socket identity is unavailable");
-      device_ = bound.st_dev;
-      inode_ = bound.st_ino;
-      owns_path_ = true;
-      // Listen only after restricting permissions, so there is no connectable
-      // interval with permissions inherited from the process umask.
-      if (::chmod(path_.c_str(), 0600) != 0 || !owns_current_path())
-        throw std::runtime_error("RPC socket permissions or identity changed");
-      if (::listen(listener_, static_cast<int>(kMaxClients)) != 0)
-        throw std::runtime_error("RPC socket listen failed");
-      clients_.reserve(kMaxClients);
-    } catch (...) {
-      cleanup();
-      throw;
-    }
+    static const std::regex target("^[A-Za-z0-9_.:-]{1,128}$");
+    if (!std::regex_match(options.target_id, target))
+      throw std::invalid_argument("target_id requires 1..128 ASCII identity characters");
+    if (options.instance_id.empty()) throw std::invalid_argument("instance_id is required");
+    auto& ref = description_["service_ref"];
+    ref["target_id"] = options.target_id;
+    ref["service"] = "xgc2.visualization";
+    ref["api_version"] = "1";
+    ref["instance_id"] = options.instance_id;
+    ref["profile"] = "http.v1";
+    ref["endpoint"]["kind"] = "unix";
+    ref["endpoint"]["address"] = path;
+    description_["domain"]["schema"] = "visualization-v1";
+    description_["domain"]["maxInstances"] = 64;
+    description_["domain"]["rates"]["revisionChecked"] = true;
+    description_["domain"]["rates"]["persistence"] = false;
+    description_["domain"]["instances"]["immutableConfiguration"] = true;
+    description_["domain"]["instances"]["inputSchema"] = "frozen-visualization-input-v1";
+    description_["domain"]["instances"]["persistence"] = false;
+    description_["resources"]["domainWorkers"] = 1;
+    description_["resources"]["domainQueueCapacity"] = Json::UInt64(slots_.size());
+    description_["policy"] = effectivePolicy();
+    storage_["configuration"]["backend"] = "memory";
+    storage_["configuration"]["durable"] = false;
+    storage_["runtime"]["socket"] = path;
+    storage_["runtime"]["lock"] = path + ".xrpc.lock";
+    storage_["runtime"]["writer"] = "xgc2-xrpc";
+    storage_["rosCache"]["root"] = options.ros_home;
+    storage_["rosCache"]["writer"] = "ROS libraries";
+    storage_["rosLogs"]["root"] = options.ros_log_dir;
+    storage_["rosLogs"]["writer"] = "ROS libraries";
+    storage_["rosLogs"]["quotaAndRotationOwner"] = "process supervisor";
+    description_["storage"] = storage_;
+    host_.set_diagnostics(&diagnostics_, "xgc2.visualization");
+    worker_ = std::thread([this] { work(); });
+  }
+  ~Impl() { stop(); join(); quiesce(); }
+  Json::Value effectivePolicy() const {
+    auto result=policyJson(policy_.effective());
+    const auto logging=policyJson(diagnostics_.effective_policy());
+    result["revision"]=logging["revision"];
+    for(const auto& key:logging["fields"].getMemberNames())result["fields"][key]=logging["fields"][key];
+    return result;
   }
 
-  ~Impl() { cleanup(); }
-
-  void run(const std::atomic<bool>& stopping) {
-    if (run_started_) throw std::logic_error("RPC control loop may run only once");
-    run_started_ = true;
-    try {
-      while (!stopping.load(std::memory_order_relaxed) &&
-             !stop_.load(std::memory_order_relaxed)) {
-        const auto now = Clock::now();
-        for (auto& client : clients_) {
-          if (now >= client.deadline) close_client(client);
+  void dispatch(HttpRequest request, HttpReply reply) {
+    if (request.target == "/v1/describe" || request.target == "/v1/xrpc/policy" ||
+        request.target == "/v1/xrpc/status" || request.target == "/v1/xrpc/storage" ||
+        request.target == "/v1/xrpc/diagnostics" || request.target == "/v1/xrpc/log-level") {
+      if(request.target=="/v1/xrpc/log-level"&&request.method=="PUT") {
+        try {
+          if(request.body.size()>256)throw std::invalid_argument("log-level update exceeds 256 bytes");
+          const auto body=parseRequest(request.body);
+          if(!body.isObject())throw std::invalid_argument("log-level update must be an object");
+          const auto names=body.getMemberNames();
+          if(!body.isObject()||names.size()!=2||!body.isMember("expectedRevision")||!body.isMember("level")||
+              (body["expectedRevision"].type()!=Json::intValue&&body["expectedRevision"].type()!=Json::uintValue)||
+              !body["expectedRevision"].isUInt64()||!body["expectedRevision"].asUInt64()||!body["level"].isString())
+            throw std::invalid_argument("log-level update requires positive expectedRevision and level");
+          DiagnosticPolicyUpdate update;
+          const auto level=body["level"].asString();
+          if(level=="error")update.level=LogSeverity::Error;
+          else if(level=="warn")update.level=LogSeverity::Warn;
+          else if(level=="info")update.level=LogSeverity::Info;
+          else if(level=="debug")update.level=LogSeverity::Debug;
+          else if(level=="trace")update.level=LogSeverity::Trace;
+          else throw std::invalid_argument("invalid log level");
+          const auto changed=diagnostics_.update(body["expectedRevision"].asUInt64(),update);
+          if(changed==DiagnosticUpdateResult::RevisionConflict) {
+            reply.complete(http_error(409,"conflict","diagnostic policy revision conflict"));
+          } else if(changed!=DiagnosticUpdateResult::Applied) {
+            reply.complete(http_error(400,"invalid_argument","unsupported diagnostic policy update"));
+          } else complete(reply,{200,effectivePolicy()},limits_.response_bytes);
+        } catch(const std::invalid_argument& error) {
+          reply.complete(http_error(400,"invalid_argument",error.what()));
         }
-        discard_closed();
-        std::vector<pollfd> descriptors;
-        descriptors.reserve(kMaxClients + 1);
-        descriptors.push_back({listener_, POLLIN, 0});
-        for (const auto& client : clients_)
-          descriptors.push_back({client.fd,
-              static_cast<short>(client.responding ? POLLOUT : POLLIN), 0});
-        const int count = ::poll(descriptors.data(), descriptors.size(), kPollMs);
-        if (count < 0) {
-          if (errno == EINTR) continue;
-          throw std::runtime_error("RPC poll failed");
+        return;
+      }
+      if (request.method != "GET") {
+        reply.complete(http_error(405, "invalid_argument", "resource supports GET"));
+      } else if (!request.body.empty()) {
+        reply.complete(http_error(400, "invalid_argument", "GET resource requires an empty body"));
+      } else if (request.target == "/v1/describe") {
+        auto description=description_;description["policy"]=effectivePolicy();
+        complete(reply, {200, std::move(description)}, limits_.response_bytes);
+      } else if (request.target == "/v1/xrpc/policy") {
+        complete(reply, {200, effectivePolicy()}, limits_.response_bytes);
+      } else if (request.target == "/v1/xrpc/storage") {
+        complete(reply, {200, storage_}, limits_.response_bytes);
+      } else if (request.target == "/v1/xrpc/log-level") {
+        complete(reply, {200, policyJson(diagnostics_.effective_policy())}, limits_.response_bytes);
+      } else if (request.target == "/v1/xrpc/diagnostics") {
+        // Draining is explicit through this private endpoint. No file sink,
+        // unbounded diagnostic queue, IO-thread stderr write or payload capture.
+        Json::Value result;
+        result["records"]=Json::Value(Json::arrayValue);
+        const auto maximum=std::min<std::size_t>(16,(limits_.response_bytes-256)/(2*diagnostic_output_capacity));
+        diagnostics_.drain(maximum,[](void* state,std::string_view record){
+          static_cast<Json::Value*>(state)->append(std::string(record));return true;
+        },&result["records"]);
+        const auto stats=diagnostics_.stats();
+        result["dropped"]=Json::UInt64(stats.dropped());result["queued"]=Json::UInt64(stats.queued);
+        result["capacity"]=Json::UInt64(stats.capacity);
+        complete(reply,{200,std::move(result)},limits_.response_bytes);
+      } else {
+        const auto stats = host_.stats();
+        Json::Value result;
+        result["sourceSteadyNs"] = Json::Int64(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            stats.source_time.time_since_epoch()).count());
+        result["stopping"] = stats.stopping;
+        result["activeConnections"] = Json::UInt64(stats.active_connections);
+        result["inflightCalls"] = Json::UInt64(stats.inflight_calls);
+        result["acceptedConnections"] = Json::UInt64(stats.accepted_connections);
+        result["rejectedConnections"] = Json::UInt64(stats.rejected_connections);
+        result["admittedCalls"] = Json::UInt64(stats.admitted_calls);
+        result["rejectedCalls"] = Json::UInt64(stats.rejected_calls);
+        result["completedCalls"] = Json::UInt64(stats.completed_calls);
+        result["deadlineExceeded"] = Json::UInt64(stats.deadline_exceeded);
+        result["idleTimeouts"] = Json::UInt64(stats.idle_timeouts);
+        result["cancelledCalls"] = Json::UInt64(stats.cancelled_calls);
+        result["malformedRequests"] = Json::UInt64(stats.malformed_requests);
+        result["peerErrors"] = Json::UInt64(stats.peer_errors);
+        const auto logging=diagnostics_.stats();
+        result["diagnosticQueueCapacity"]=Json::UInt64(logging.capacity);
+        result["diagnosticsQueued"]=Json::UInt64(logging.queued);
+        result["diagnosticsDropped"]=Json::UInt64(logging.dropped());
+        {
+          std::lock_guard<std::mutex> lock(mutex_);
+          result["queuedDomainCalls"] = Json::UInt64(size_);
+          result["activeDomainCalls"] = busy_ ? 1 : 0;
         }
-        if (stopping.load(std::memory_order_relaxed) ||
-            stop_.load(std::memory_order_relaxed)) break;
-        if (descriptors[0].revents & (POLLERR | POLLHUP | POLLNVAL))
-          throw std::runtime_error("RPC listener failed");
-        // Indexes still refer to the old clients if accept appends/reallocates.
-        if (descriptors[0].revents & POLLIN) accept_clients();
-        for (std::size_t i = 1; i < descriptors.size(); ++i) {
-          if (stopping.load(std::memory_order_relaxed) ||
-              stop_.load(std::memory_order_relaxed)) break;
-          auto& client = clients_[i - 1];
-          const auto events = descriptors[i].revents;
-          if (events & (POLLERR | POLLNVAL)) {
-            close_client(client);
-            continue;
-          }
-          if (Clock::now() >= client.deadline) {
-            close_client(client);
-            continue;
-          }
-          if (!client.responding && (events & (POLLIN | POLLHUP))) read_client(client);
-          if (client.fd >= 0 && client.responding &&
-              (events & (POLLIN | POLLOUT | POLLHUP))) write_client(client);
-        }
-        discard_closed();
+        complete(reply, {200, result}, limits_.response_bytes);
       }
-    } catch (...) {
-      cleanup();
-      throw;
-    }
-    cleanup();
-  }
-
-  void stop() noexcept { stop_.store(true, std::memory_order_relaxed); }
-  const std::string& path() const noexcept { return path_; }
-
- private:
-  bool owns_current_path() const noexcept {
-    struct stat current{};
-    return owns_path_ && ::lstat(path_.c_str(), &current) == 0 &&
-        S_ISSOCK(current.st_mode) && current.st_dev == device_ && current.st_ino == inode_;
-  }
-
-  void cleanup() noexcept {
-    for (auto& client : clients_) close_client(client);
-    clients_.clear();
-    if (listener_ >= 0) {
-      ::close(listener_);
-      listener_ = -1;
-    }
-    if (owns_current_path()) ::unlink(path_.c_str());
-    owns_path_ = false;
-  }
-
-  static void close_client(Client& client) noexcept {
-    if (client.fd >= 0) ::close(client.fd);
-    client.fd = -1;
-  }
-
-  void discard_closed() {
-    clients_.erase(std::remove_if(clients_.begin(), clients_.end(),
-        [](const Client& client) { return client.fd < 0; }), clients_.end());
-  }
-
-  void accept_clients() {
-    for (int i = 0; i < 8; ++i) {
-      const int fd = ::accept4(listener_, nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC);
-      if (fd < 0) {
-        if (errno == EINTR) continue;
-        if (errno == EAGAIN || errno == EWOULDBLOCK) return;
-        throw std::runtime_error("RPC accept failed");
-      }
-      if (clients_.size() == kMaxClients) {
-        const std::string denied = response({503, error_body("client limit reached")});
-        ::send(fd, denied.data(), denied.size(), MSG_NOSIGNAL | MSG_DONTWAIT);
-        ::close(fd);
-        continue;
-      }
-      Client client{};
-      client.fd = fd;
-      client.deadline = Clock::now() + std::chrono::milliseconds(kClientLifetimeMs);
-      clients_.push_back(std::move(client));
-    }
-  }
-
-  static void reply(Client& client, int status, const char* error) {
-    client.output = response({status, error_body(error)});
-    client.input.clear();
-    client.responding = true;
-  }
-
-  bool parse_headers(Client& client) {
-    const auto end = client.input.find("\r\n\r\n");
-    if (end == std::string::npos) {
-      if (client.input.size() >= kMaxHeaderBytes)
-        reply(client, 431, "headers exceed limit");
-      return false;
-    }
-    client.header_bytes = end + 4;
-    if (client.header_bytes > kMaxHeaderBytes) {
-      reply(client, 431, "headers exceed limit");
-      return false;
-    }
-    const auto first_line = client.input.find("\r\n");
-    const std::string request = client.input.substr(0, first_line);
-    const auto first_space = request.find(' ');
-    const auto last_space = request.rfind(' ');
-    if (first_space == std::string::npos || first_space == last_space ||
-        first_space == 0 || last_space <= first_space + 1 ||
-        request.find(' ', first_space + 1) != last_space ||
-        (request.substr(last_space + 1) != "HTTP/1.1" &&
-         request.substr(last_space + 1) != "HTTP/1.0")) {
-      reply(client, 400, "invalid request line");
-      return false;
-    }
-    client.method = request.substr(0, first_space);
-    client.path = request.substr(first_space + 1, last_space - first_space - 1);
-    if (!std::all_of(client.method.begin(), client.method.end(), token_char) ||
-        client.path[0] != '/' ||
-        !std::all_of(client.path.begin(), client.path.end(),
-            [](unsigned char c) { return c > 32 && c < 127 && c != '#'; })) {
-      reply(client, 400, "invalid method or path");
-      return false;
-    }
-    bool length_seen = false;
-    std::string content_type;
-    bool content_type_seen = false;
-    std::size_t position = first_line + 2;
-    while (position < end) {
-      const auto line_end = client.input.find("\r\n", position);
-      const std::string line = client.input.substr(position, line_end - position);
-      const auto colon = line.find(':');
-      if (colon == std::string::npos || colon == 0 ||
-          !std::all_of(line.begin(), line.begin() + colon, token_char) ||
-          !std::all_of(line.begin() + colon + 1, line.end(),
-              [](unsigned char c) { return c == '\t' || (c >= 32 && c != 127); })) {
-        reply(client, 400, "invalid header");
-        return false;
-      }
-      const auto name = lower_ascii(line.substr(0, colon));
-      const auto value = trim_ows(line.substr(colon + 1));
-      if (name == "transfer-encoding" || name == "expect") {
-        reply(client, 400, "unsupported request framing");
-        return false;
-      }
-      if (name == "content-length") {
-        if (length_seen || value.empty() ||
-            !std::all_of(value.begin(), value.end(),
-                [](unsigned char c) { return c >= '0' && c <= '9'; })) {
-          reply(client, 400, "invalid content length");
-          return false;
-        }
-        length_seen = true;
-        for (const char digit : value) {
-          const auto next = static_cast<std::size_t>(digit - '0');
-          if (client.body_bytes > (kMaxBodyBytes - next) / 10) {
-            reply(client, 413, "body exceeds limit");
-            return false;
-          }
-          client.body_bytes = client.body_bytes * 10 + next;
-        }
-      }
-      if (name == "content-type") {
-        if (content_type_seen) {
-          reply(client, 400, "duplicate content type");
-          return false;
-        }
-        content_type_seen = true;
-        content_type = lower_ascii(trim_ows(value.substr(0, value.find(';'))));
-      }
-      position = line_end + 2;
-    }
-    if (client.body_bytes && content_type_seen && content_type != "application/json") {
-      reply(client, 415, "body must be application/json");
-      return false;
-    }
-    client.headers_ready = true;
-    return true;
-  }
-
-  void process_input(Client& client) {
-    if (!client.headers_ready && !parse_headers(client)) return;
-    const auto expected = client.header_bytes + client.body_bytes;
-    if (client.input.size() < expected) return;
-    if (client.input.size() != expected) {
-      reply(client, 400, "one framed request is required");
       return;
     }
-    Json::Value body;
-    if (client.body_bytes != 0) {
-      Json::CharReaderBuilder builder;
-      builder["allowComments"] = false;
-      builder["collectComments"] = false;
-      builder["allowTrailingCommas"] = false;
-      builder["strictRoot"] = false;
-      builder["failIfExtra"] = true;
-      builder["rejectDupKeys"] = true;
-      builder["allowSpecialFloats"] = false;
-      builder["stackLimit"] = 64;
-      std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
-      std::string errors;
-      const char* begin = client.input.data() + client.header_bytes;
-      bool parsed = false;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (stopping_.load()) {
+        reply.complete(http_error(503, "unavailable", "visualizer is stopping"));
+        return;
+      }
+      if (size_ == slots_.size()) {
+        reply.complete(http_error(503, "resource_exhausted", "domain handoff is full"));
+        return;
+      }
+      slots_[tail_].emplace(Work{std::move(request), std::move(reply)});
+      tail_ = (tail_ + 1) % slots_.size();
+      ++size_;
+    }
+    wake_.notify_one();
+  }
+  void work() noexcept {
+    for (;;) {
+      std::optional<Work> current;
+      {
+        std::unique_lock<std::mutex> lock(mutex_);
+        wake_.wait(lock, [this] { return size_ || stopping_.load(); });
+        if (!size_) return;
+        current = std::move(slots_[head_]);
+        slots_[head_].reset();
+        head_ = (head_ + 1) % slots_.size();
+        --size_;
+        busy_ = true;
+      }
       try {
-        parsed = reader->parse(begin, begin + client.body_bytes, &body, &errors);
+        if (stopping_.load()) {
+          current->reply.complete(http_error(503, "unavailable", "visualizer is stopping"));
+        } else if (!current->reply.cancelled() && Clock::now() < current->request.deadline) {
+          if ((current->request.method == "GET" || current->request.method == "DELETE") &&
+              !current->request.body.empty())
+            throw std::invalid_argument("GET and DELETE require an empty body");
+          const auto body = parseRequest(current->request.body);
+          // Admission does not assert native completion. Once started, native
+          // work remains owned even when the peer/deadline cancels its reply.
+          if(!current->reply.cancelled()&&Clock::now()<current->request.deadline)
+            complete(current->reply, handler_(current->request.method, current->request.target, body),
+                     limits_.response_bytes);
+        }
+      } catch (const std::invalid_argument& error) {
+        current->reply.complete(http_error(400, "invalid_argument", error.what()));
       } catch (...) {
-        // JsonCpp also throws when its nesting limit is exceeded. A malformed
-        // client must not terminate the shared server/control loop.
+        current->reply.complete(http_error(500, "internal", "internal RPC handler failure"));
       }
-      if (!parsed) {
-        reply(client, 400, "invalid JSON body");
-        return;
-      }
-    }
-    try {
-      client.output = response(handler_(client.method, client.path, body));
-    } catch (...) {
-      client.output = response({500, error_body("request handler failed")});
-    }
-    client.input.clear();
-    client.responding = true;
-  }
-
-  void read_client(Client& client) {
-    char buffer[16 * 1024];
-    std::size_t received = 0;
-    while (!client.responding && received < kIoBudget) {
-      const auto count = ::recv(client.fd, buffer,
-          std::min(sizeof(buffer), kIoBudget - received), MSG_DONTWAIT);
-      if (count > 0) {
-        received += static_cast<std::size_t>(count);
-        client.input.append(buffer, static_cast<std::size_t>(count));
-        process_input(client);
-      } else if (count == 0) {
-        reply(client, 400, "incomplete request");
-      } else {
-        if (errno == EINTR) continue;
-        if (errno == EAGAIN || errno == EWOULDBLOCK) return;
-        close_client(client);
-        return;
+      current.reset();
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        busy_ = false;
       }
     }
   }
-
-  static void write_client(Client& client) {
-    std::size_t written = 0;
-    while (client.sent < client.output.size() && written < kIoBudget) {
-      const auto count = ::send(client.fd, client.output.data() + client.sent,
-          std::min(client.output.size() - client.sent, kIoBudget - written), MSG_NOSIGNAL);
-      if (count > 0) {
-        client.sent += static_cast<std::size_t>(count);
-        written += static_cast<std::size_t>(count);
-      } else if (count < 0 && errno == EINTR) {
-        continue;
-      } else if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-        return;
-      } else {
-        close_client(client);
-        return;
-      }
+  void stop() noexcept {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      stopping_.store(true);
     }
-    if (client.sent == client.output.size()) close_client(client);
+    // Wake the owner without releasing the endpoint. Its native quiescence
+    // phase still owns the lease; only the later SDK drain closes it.
+    host_.wake();
+    wake_.notify_one();
   }
-
-  std::string path_;
+  void join() { if (worker_.joinable()) worker_.join(); }
+  void quiesce() {
+    if(!native_quiesced_) {
+      native_quiesced_=true;
+      if(quiesce_native_)quiesce_native_();
+    }
+  }
+  void run(const std::atomic<bool>& external_stop) {
+    while (!external_stop.load() && !stopping_.load())
+      host_.poll(std::chrono::milliseconds(50));
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      stopping_.store(true);
+    }
+    wake_.notify_one();
+    join();
+    // No new RPC is dispatched while this owner is outside poll(). Complete
+    // native workers and publication fences before initiating SDK lease close.
+    quiesce();
+    host_.drain();
+  }
+  const std::string& socket_path() const noexcept { return host_.socket_path(); }
+ private:
+  struct Work { HttpRequest request; HttpReply reply; };
+  RuntimePolicy policy_;
+  HttpLimits limits_;
   RpcHandler handler_;
-  int listener_ = -1;
-  dev_t device_ = 0;
-  ino_t inode_ = 0;
-  bool owns_path_ = false;
-  bool run_started_ = false;
-  std::atomic<bool> stop_{false};
-  std::vector<Client> clients_;
+  std::vector<std::optional<Work>> slots_;
+  Json::Value description_, storage_;
+  Diagnostics diagnostics_;
+  std::function<void()> quiesce_native_;
+  bool native_quiesced_{false};
+  std::mutex mutex_;
+  std::condition_variable wake_;
+  std::size_t head_{0}, tail_{0}, size_{0};
+  bool busy_{false};
+  std::atomic<bool> stopping_{false};
+  HttpServer host_;
+  std::thread worker_;
 };
 
-RpcServer::RpcServer(std::string socket_path, RpcHandler handler)
-    : impl_(new Impl(std::move(socket_path), std::move(handler))) {}
+RpcServer::RpcServer(std::string path, RpcHandler handler, RpcOptions options, std::function<void()> quiesce_native)
+    : impl_(new Impl(std::move(path), std::move(handler), std::move(options),std::move(quiesce_native))) {}
 RpcServer::~RpcServer() = default;
+std::string RpcServer::newInstanceId() { return xgc2::xrpc::new_instance_id(); }
 void RpcServer::run(const std::atomic<bool>& stopping) { impl_->run(stopping); }
 void RpcServer::stop() noexcept { impl_->stop(); }
-const std::string& RpcServer::socket_path() const noexcept { return impl_->path(); }
-
-}  // namespace xgc2_ros_visualizer
+const std::string& RpcServer::socket_path() const noexcept { return impl_->socket_path(); }
+} // namespace xgc2_ros_visualizer

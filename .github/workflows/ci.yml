@@ -29,12 +29,15 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build, test and install-check Deb in controlled Noetic image
         env:
-          BUILD_IMAGE: ghcr.io/xgc-team/xgc2-images/xgc2-build-focal-full-noetic:1.0.0@sha256:2d0ab240a669e59dc6e86e41806041a7f5d46751c787b5cbb225b10e1faed39b
+          BUILD_IMAGE: ${{ vars.XGC2_FOCAL_CXX_BUILD_IMAGE }}
+          BUILD_CXX: ${{ vars.XGC2_FOCAL_CXX }}
         run: |
           set -euo pipefail
+          test -n "$BUILD_IMAGE" && test -n "$BUILD_CXX"
+          [[ "$BUILD_IMAGE" == *@sha256:* ]]
           install -d .ci/build-manifests
           .xgc2/scripts/build_debs_in_docker.sh \
-            --image "$BUILD_IMAGE" \
+            --image "$BUILD_IMAGE" --cxx "$BUILD_CXX" \
             --work-dir "$RUNNER_TEMP/ros-visualizer-${{ matrix.name }}" \
             --output-dir "$GITHUB_WORKSPACE/debs"
       - name: Create strict-v1 trusted build manifest
