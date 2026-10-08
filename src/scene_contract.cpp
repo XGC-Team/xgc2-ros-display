@@ -463,6 +463,31 @@ foxglove_msgs::SceneUpdate worldWallsSceneUpdate(const WorldBoundaryDisplay& bou
     return update;
 }
 
+WorldBoundaryDisplayMode worldBoundaryDisplayModeFromString(const std::string& mode) {
+    if (mode == "off") {
+        return WorldBoundaryDisplayMode::kOff;
+    }
+    if (mode == "ground") {
+        return WorldBoundaryDisplayMode::kGround;
+    }
+    if (mode == "walls") {
+        return WorldBoundaryDisplayMode::kWalls;
+    }
+    throw std::invalid_argument("world boundary display mode must be off, ground, or walls");
+}
+
+WorldBoundaryLayerMessages worldBoundaryLayerMessages(const WorldBoundaryDisplay& boundary,
+                                                      WorldBoundaryDisplayMode mode, const ros::Time& stamp,
+                                                      const std::string& frame_id) {
+    WorldBoundaryDisplay hidden;
+    const bool show_ground = mode == WorldBoundaryDisplayMode::kGround && boundary.displayable;
+    const bool show_walls = mode == WorldBoundaryDisplayMode::kWalls && boundary.displayable;
+    WorldBoundaryLayerMessages messages;
+    messages.ground = worldBoundarySceneUpdate(show_ground ? boundary : hidden, stamp, frame_id);
+    messages.walls = worldWallsSceneUpdate(show_walls ? boundary : hidden, stamp, frame_id);
+    return messages;
+}
+
 geometry_msgs::Point applyExperimentWorldOffsetOnce(geometry_msgs::Point position,
                                                     const std::array<double, 3>& offset) {
     position.x += offset[0];

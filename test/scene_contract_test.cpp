@@ -871,6 +871,32 @@ TEST(WorldBoundary, DisplayableLoopUsesGroundZNotZMin) {
     EXPECT_TRUE(hidden.entities.empty());
 }
 
+TEST(WorldBoundary, DisplayModePublishesOnlyTheSelectedLayer) {
+    const auto boundary = parseWorldBoundaryDisplay(
+        R"({"schemaVersion":1,"frameId":"world","unit":"m","controlBounds":{"xMin":-12,"xMax":12,"yMin":-7,"yMax":7,"zMin":-1,"zMax":2},"groundZ":0.18})");
+    const auto off = worldBoundaryLayerMessages(
+        boundary, worldBoundaryDisplayModeFromString("off"), ros::Time(1, 0), "world");
+    EXPECT_TRUE(off.ground.entities.empty());
+    EXPECT_EQ(off.ground.deletions.size(), 1U);
+    EXPECT_TRUE(off.walls.entities.empty());
+    EXPECT_EQ(off.walls.deletions.size(), 1U);
+
+    const auto ground = worldBoundaryLayerMessages(
+        boundary, WorldBoundaryDisplayMode::kGround, ros::Time(1, 0), "world");
+    EXPECT_EQ(ground.ground.entities.size(), 1U);
+    EXPECT_TRUE(ground.ground.deletions.empty());
+    EXPECT_TRUE(ground.walls.entities.empty());
+    EXPECT_EQ(ground.walls.deletions.size(), 1U);
+
+    const auto walls = worldBoundaryLayerMessages(
+        boundary, WorldBoundaryDisplayMode::kWalls, ros::Time(1, 0), "world");
+    EXPECT_TRUE(walls.ground.entities.empty());
+    EXPECT_EQ(walls.ground.deletions.size(), 1U);
+    EXPECT_EQ(walls.walls.entities.size(), 1U);
+    EXPECT_TRUE(walls.walls.deletions.empty());
+    EXPECT_THROW(worldBoundaryDisplayModeFromString("ceiling"), std::invalid_argument);
+}
+
 TEST(WorldBoundary, TopicsAreDistinctFromScene) {
     EXPECT_STREQ(kWorldBoundaryTopic, "/xgc/world_boundary");
     EXPECT_STREQ(kWorldBoundaryArTopic, "/xgc/world_boundary_ar");

@@ -98,6 +98,22 @@ foxglove_msgs::SceneEntityDeletion worldWallsDeletion(const ros::Time& stamp);
 foxglove_msgs::SceneUpdate worldWallsSceneUpdate(const WorldBoundaryDisplay& boundary, const ros::Time& stamp,
                                                  const std::string& frame_id);
 
+// One display mode owns both fence layers. The layer that is off is a deletion,
+// so a viewer cannot turn it back on from a latched geometry the publisher
+// kept sending.
+enum class WorldBoundaryDisplayMode { kOff, kGround, kWalls };
+
+WorldBoundaryDisplayMode worldBoundaryDisplayModeFromString(const std::string& mode);
+
+struct WorldBoundaryLayerMessages {
+    foxglove_msgs::SceneUpdate ground;
+    foxglove_msgs::SceneUpdate walls;
+};
+
+WorldBoundaryLayerMessages worldBoundaryLayerMessages(const WorldBoundaryDisplay& boundary,
+                                                      WorldBoundaryDisplayMode mode, const ros::Time& stamp,
+                                                      const std::string& frame_id);
+
 // Experiment world offset is applied once to a VRPN sample. Callers must not
 // add it again in geometry construction.
 geometry_msgs::Point applyExperimentWorldOffsetOnce(geometry_msgs::Point position,
