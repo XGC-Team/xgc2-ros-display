@@ -8,6 +8,7 @@ import hashlib
 import http.client
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -78,7 +79,68 @@ def instance(count=0, relays=None, scene=True):
                                                scenePaths=scene, paths=scene)), displayRelays=relays or [])
 
 
-def main(binary):
+class CatalogLaunch:
+    """Read one external catalog snapshot; never fix its argv or invent aliases."""
+    def __init__(self, path):
+        self.path = os.path.abspath(path)
+        with open(self.path, 'rb') as stream:
+            contents = stream.read(1024 * 1024 + 1)
+        require(len(contents) <= 1024 * 1024, 'catalog input exceeds fixture limit')
+        self.sha256 = hashlib.sha256(contents).hexdigest()
+        catalog = json.loads(contents)
+        definitions = [value for value in catalog['definitions'] if value['id'] == 'ros-visualizer']
+        require(len(definitions) == 1, 'catalog must have one ros-visualizer definition')
+        self.definition = definitions[0]
+        require(self.definition['command'].get('directExecutable') is True,
+                'catalog must launch the native executable directly')
+        self.stop_seconds = self.definition['stop']['gracePeriod'] / 1e9
+        require(0 < self.stop_seconds <= 10, 'catalog Stop must have a finite fixture grace period')
+
+    def render(self, binary, allocations):
+        command = self.definition['command']
+        require(command['executable'] == binary,
+                'catalog executable differs; run against its actually installed native path')
+        properties = self.definition['parameters']['properties']
+        parameters = {name: spec['default'] for name, spec in properties.items() if 'default' in spec}
+        parameters.update({name: value for name, value in allocations.items() if name in properties})
+        require(all(name in parameters for name in self.definition['parameters']['required']),
+                'catalog requires missing owner-supplied input')
+        def value(text):
+            require(isinstance(text, str), 'catalog argv/env must be strings')
+            def replace(match):
+                name = match.group(1)
+                require(name in parameters, 'unresolved catalog parameter: ' + name)
+                entry = parameters[name]
+                require(isinstance(entry, (str, int)) and not isinstance(entry, bool),
+                        'fixture expects scalar native startup parameters')
+                return str(entry)
+            rendered = re.sub(r'\$\{([^{}]+)\}', replace, text)
+            require('${' not in rendered, 'unresolved catalog template')
+            return rendered
+        # Keep the catalog's argument order, flags and empty arguments verbatim.
+        # Environment inheritance matches ordinary native process launch; only
+        # declared command.env values are overlaid, without patching its library
+        # paths, directory fields or protocol arguments in the test.
+        argv = [binary] + [value(argument) for argument in command['args']]
+        environment = dict(os.environ)
+        environment.update({name: value(entry) for name, entry in command['env'].items()})
+        return argv, environment
+
+    def verify_reference(self, reference, allocations):
+        services = self.definition.get('services', [])
+        require(len(services) == 1, 'catalog must declare its native ServiceRef discovery')
+        declaration = services[0]
+        require(declaration['describePath'] == '/v1/describe', 'catalog discovery method differs')
+        for name in ('service', 'api_version', 'profile'):
+            require(reference[name] == declaration[name], 'ServiceRef differs from catalog: ' + name)
+        require(reference['target_id'] == allocations['targetId'], 'ServiceRef target differs from owner')
+        require(reference['endpoint']['kind'] == 'unix' and
+                reference['endpoint']['address'] == allocations[declaration['endpointParameter']],
+                'ServiceRef endpoint differs from catalog allocation')
+
+
+def main(binary, catalog_path=None):
+    catalog = CatalogLaunch(catalog_path) if catalog_path else None
     with tempfile.TemporaryDirectory(prefix='xgc2-single-server-probe-') as work:
         probe_socket = os.path.join(work, 'control.sock')
         reserve = socket.socket()
@@ -89,8 +151,29 @@ def main(binary):
         os.environ.update(ROS_MASTER_URI=master_uri, ROS_IP='127.0.0.1', ROS_HOME=work,
                           ROS_LOG_DIR=os.path.join(work, 'roslog'))
         os.environ.pop('ROS_HOSTNAME', None)
+        allocations = dict(socketPath=probe_socket, targetId='private-probe',
+            callbackWorkers=2, ratesJson='{}', worldClock='simulation',
+            rosMasterUri=master_uri, rosIp='127.0.0.1', rosHome=work,
+            rosLogDir=os.path.join(work, 'roslog'))
+        os.makedirs(allocations['rosLogDir'], mode=0o700)
         logfile = open(os.path.join(work, 'process.log'), 'w')
         processes = []
+        def launch_provider():
+            if catalog:
+                argv, environment = catalog.render(binary, allocations)
+                print('CATALOG LAUNCH: ' + json.dumps(dict(path=catalog.path,
+                    sha256=catalog.sha256, argv=argv, declaredEnvironment={
+                        name: environment[name] for name in catalog.definition['command']['env']}),
+                    sort_keys=True), flush=True)
+            else:
+                argv = [binary, '--socket', probe_socket, '--target-id', 'private-probe',
+                    '--callback-workers', '2', '--world-clock', 'simulation',
+                    '/use_sim_time:=/xgc2_ros_visualizer/use_sim_time']
+                environment = None
+            provider = subprocess.Popen(argv, env=environment, stdout=logfile,
+                                        stderr=logfile, start_new_session=True)
+            processes.append(provider)
+            return provider
         try:
             master = subprocess.Popen(['roscore', '-p', str(port)], stdout=logfile,
                                       stderr=logfile, start_new_session=True)
@@ -152,16 +235,13 @@ def main(binary):
                 json.dump(dict(instanceId='old-initial', robots=[], context=dict(
                     runMode='simulation', worldClock='simulation', worldBoundary=None),
                     settings={}, displayRelays=[]), stream)
-            server = subprocess.Popen([binary, '--socket', probe_socket,
-                '--target-id', 'private-probe', '--callback-workers', '2',
-                '--world-clock', 'simulation',
-                '/use_sim_time:=/xgc2_ros_visualizer/use_sim_time'],
-                stdout=logfile, stderr=logfile, start_new_session=True)
-            processes.append(server)
+            server = launch_provider()
             wait(lambda: os.path.exists(probe_socket) or server.poll() is not None,
                  'server socket absent')
             require(server.poll() is None, 'server exited during native startup')
             description = rpc('GET', '/v1/describe')
+            if catalog:
+                catalog.verify_reference(description['service_ref'], allocations)
             instance_id = description['service_ref']['instance_id']
             require(description['service_ref']['target_id'] == 'private-probe', 'wrong ServiceRef target')
             require(rpc('GET', '/v1/health')['callbackWorkers'] == 2, 'wrong input pool size')
@@ -405,7 +485,8 @@ def main(binary):
             require(not rospy.has_param('/ugv102/visual_robot_description'), 'independent ground description leaked')
             rpc('PUT', '/v1/rates', low)
             # Lowest legal rates must not make SIGTERM wait ten seconds.
-            started = time.monotonic();server.send_signal(signal.SIGTERM);server.wait(timeout=3)
+            started = time.monotonic();server.send_signal(signal.SIGTERM)
+            server.wait(timeout=catalog.stop_seconds if catalog else 3)
             stop_seconds = time.monotonic() - started
             require(server.returncode == 0 and stop_seconds < 2, 'low-rate Stop failed')
             require(not os.path.exists(probe_socket), 'owned RPC socket leaked')
@@ -428,15 +509,14 @@ def main(binary):
             rospy.set_param('/xgc2_ros_visualizer/initial_instance_file', retired_initial)
             rospy.set_param('/xgc2_ros_visualizer/server_instance_id', 'old-provider')
             previous_incarnation = instance_id
-            restarted = subprocess.Popen([binary, '--socket', probe_socket,
-                '--target-id', 'private-probe', '--callback-workers', '2', '--world-clock', 'simulation'],
-                stdout=logfile, stderr=logfile, start_new_session=True)
-            processes.append(restarted)
+            restarted = launch_provider()
             wait(lambda: os.path.exists(probe_socket) or restarted.poll() is not None, 'restart socket absent')
             require(restarted.poll() is None, 'restart failed')
             rpc('GET', '/v1/health', expected=409)
             instance_id = None
             fresh = rpc('GET', '/v1/describe')['service_ref']
+            if catalog:
+                catalog.verify_reference(fresh, allocations)
             instance_id = fresh['instance_id']
             require(instance_id != previous_incarnation, 'restart retained old provider incarnation')
             restored = rpc('GET', '/v1/rates')
@@ -459,10 +539,7 @@ def main(binary):
             require(os.path.exists(probe_socket), 'crash fixture did not retain the stale socket')
             wait(lambda: source_pubs[0].get_num_connections() == 1 and not crash_viewer.get_num_connections(),
                  'killed native relay retained live data connections')
-            recovered = subprocess.Popen([binary, '--socket', probe_socket,
-                '--target-id', 'private-probe', '--callback-workers', '2', '--world-clock', 'simulation'],
-                stdout=logfile, stderr=logfile, start_new_session=True)
-            processes.append(recovered)
+            recovered = launch_provider()
             instance_id = None
             recovery_reference = None
             def recovery_ready():
@@ -477,6 +554,8 @@ def main(binary):
             instance_id = crash_incarnation
             rpc('GET', '/v1/health', expected=409)
             instance_id = recovery_reference['instance_id']
+            if catalog:
+                catalog.verify_reference(recovery_reference, allocations)
             require(instance_id != crash_incarnation, 'crash replacement reused provider incarnation')
             require(rpc('GET', '/v1/status')['instanceCount'] == 0, 'crash recovery resurrected native membership')
             restored = rpc('GET', '/v1/rates')
@@ -497,7 +576,8 @@ def main(binary):
             wait(lambda: source_pubs[0].get_num_connections() == 1 and not crash_viewer.get_num_connections(),
                  'replacement DELETE did not fence its native relay')
             crash_viewer.unregister()
-            recovered.send_signal(signal.SIGTERM);recovered.wait(timeout=3)
+            recovered.send_signal(signal.SIGTERM)
+            recovered.wait(timeout=catalog.stop_seconds if catalog else 3)
             require(recovered.returncode == 0 and not os.path.exists(probe_socket),
                     'crash replacement failed native operation or endpoint cleanup')
             print(json.dumps(dict(ok=True, scope='private ROS graph; not station/scientific acceptance',
@@ -509,6 +589,8 @@ def main(binary):
                 restart_incarnation_fenced=True, rate_cas_conflict=True, ephemeral_restart=True,
                 sigkill_stale_endpoint_recovered=True, crash_incarnation_fenced=True,
                 sigkill_native_relay_fenced=True, crash_relay_no_replay=True,
+                launch_source='catalog' if catalog else 'direct native fixture',
+                catalog_sha256=catalog.sha256 if catalog else None,
                 no_child_processes=True), sort_keys=True))
             rospy.signal_shutdown('private probe complete')
         except Exception:
@@ -520,7 +602,7 @@ def main(binary):
                 print('PRIVATE MISSING INPUTS: ' + repr([i + 1 for i, p in enumerate(pose_pubs) if not p.get_num_connections()]), file=sys.stderr)
             if 'observers' in locals():
                 print('PRIVATE OBSERVER CONNECTIONS: ' + repr([(p.resolved_name, p.get_num_connections()) for p in observers]), file=sys.stderr)
-            if 'rpc' in locals() and server.poll() is None:
+            if 'rpc' in locals() and 'server' in locals() and server.poll() is None:
                 try:
                     _, _, state = xmlrpc.client.ServerProxy(master_uri).getSystemState('/private_probe')
                     owned = {label: [(topic, nodes) for topic, nodes in entries if '/xgc2_ros_visualizer' in nodes]
@@ -544,5 +626,5 @@ def main(binary):
 
 
 if __name__ == '__main__':
-    require(len(sys.argv) == 2, 'expected one actual server executable')
-    main(os.path.abspath(sys.argv[1]))
+    require(len(sys.argv) in (2, 3), 'expected actual server executable and optional external catalog')
+    main(os.path.abspath(sys.argv[1]), sys.argv[2] if len(sys.argv) == 3 else None)

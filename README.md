@@ -190,7 +190,7 @@ network access to production APT for dependencies; it never uses an active Core
 container as its builder.
 
 `test/installed_node_probe.py` creates a finite private ROS graph. Its gate covers
-zero-robot startup readiness and clock remapping, no-peer persistent subscriptions,
+zero-robot explicit activation readiness and clock remapping, no-peer persistent subscriptions,
 four-type exact-byte relays, RPC atomic validation/retries/deletion, foreign
 instance/parameter preservation, 20/100 robot resource counts, source-time paths
 at accelerated clock/low publication rates, in-process URDF joint TF and bounded
@@ -199,3 +199,23 @@ client limits, deadlines and foreign-inode socket cleanup. Private probes are
 correctness/resource checks, not formal station, browser or scientific-mission
 acceptance. Source CI and Deb preparation do not imply production APT visibility
 or live station adoption; the central release workflow owns publication.
+
+Pass a fixed external process catalog to verify the consumer's actual startup
+arguments/environment, ServiceRef declaration and Stop grace period:
+
+```sh
+python3 test/installed_node_probe.py \
+  /opt/ros/noetic/lib/xgc2_ros_visualizer/xgc2_ros_visualizer_node \
+  /fixture/xgc2-ros-visualizer.json
+```
+
+This mode runs in an independent container with the actual Deb installed at the
+catalog's executable path. It renders the catalog unchanged using explicit
+private ROS/socket/cache/log allocations, records its input hash and actual
+argv/environment, and uses it for initial startup and every restart. The native
+render/topic/relay/removal checks then run through the same application. A retired
+flag or missing grant remains a failed integration gate; the fixture never patches
+catalog arguments or supplies a legacy product alias. The direct fixture mode
+without a catalog verifies native product behavior and does not prove catalog,
+Core planner or authored workflow integration. Those consumers remain separately
+owned and audited.
