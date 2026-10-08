@@ -135,6 +135,9 @@ class GazeboAutoVisualizer {
         private_nh_.param("pose_transform_publish_rate", pose_transform_publish_rate_, 120.0);
         private_nh_.param("scene_publish_rate", scene_publish_rate_, 10.0);
         private_nh_.param("scene_path_publish_rate", scene_path_publish_rate_, 10.0);
+        // Edge SceneUpdate, not the body transform. The body stays on the pose
+        // timer; this ceiling keeps the ground ring from forwarding that rate.
+        private_nh_.param("height_projection_publish_rate", height_projection_publish_rate_, 10.0);
         // The gradient is deliberate. A pose is what an operator reads, so it runs
         // at the timer rate. A trail has to stay attached to the robot drawing it
         // -- at 0.2 Hz the history visibly trailed the aircraft -- so it sits one
@@ -169,6 +172,8 @@ class GazeboAutoVisualizer {
 
         publish_rate_ = std::max(1.0, publish_rate_);
         pose_transform_publish_rate_ = std::max(1.0, pose_transform_publish_rate_);
+        height_projection_publish_rate_ =
+            std::min(pose_transform_publish_rate_, std::max(0.1, height_projection_publish_rate_));
         scene_publish_rate_ = std::min(publish_rate_, std::max(1.0, scene_publish_rate_));
         scene_path_publish_rate_ = std::min(publish_rate_, std::max(0.1, scene_path_publish_rate_));
         joint_transform_publish_rate_ = std::min(publish_rate_, std::max(0.1, joint_transform_publish_rate_));
@@ -246,6 +251,10 @@ class GazeboAutoVisualizer {
             height_projection_ar_pub_ = nh_.advertise<foxglove_msgs::SceneUpdate>(
                 gazebo_sim_visualization::kUavHeightProjectionArTopic, 1, true);
             publishSceneReset(height_projection_ar_pub_);
+            height_projection_cadence_.reset(
+                new gazebo_sim_visualization::PublishCadence(height_projection_publish_rate_));
+            height_projection_ar_cadence_.reset(
+                new gazebo_sim_visualization::PublishCadence(height_projection_publish_rate_));
             scene_ar_pub_ = nh_.advertise<foxglove_msgs::SceneUpdate>(
                 gazebo_sim_visualization::kIdentityArTopic, 1, true);
             publishSceneReset(scene_ar_pub_);
@@ -654,15 +663,27 @@ class GazeboAutoVisualizer {
 
     void publishHeightProjectionViews(const ros::Time& now) {
         publishHeightProjectionView(height_projection_pub_, &height_projection_entities_,
+                                     height_projection_cadence_.get(),
                                      gazebo_sim_visualization::HeightProjectionView::kLocalPosition, now);
         publishHeightProjectionView(height_projection_ar_pub_, &height_projection_ar_entities_,
+                                     height_projection_ar_cadence_.get(),
                                      gazebo_sim_visualization::HeightProjectionView::kVrpn, now);
     }
 
     void publishHeightProjectionView(const ros::Publisher& publisher,
                                       std::map<std::string, foxglove_msgs::SceneEntity>* entities,
+                                      gazebo_sim_visualization::PublishCadence* cadence,
                                       gazebo_sim_visualization::HeightProjectionView view, const ros::Time& now) {
-        if (!publisher || entities == nullptr) {
+        if (!publisher || entities == nullptr || cadence == nullptr) {
+            return;
+        }
+        // No viewer, recorder, or other subscriber: do not spend the pose rate
+        // on this edge layer. The gate stays put, so the first subscriber gets
+        // the latest pose on the next tick instead of a stale latch.
+        if (publisher.getNumSubscribers() == 0U) {
+            return;
+        }
+        if (!cadence->take(now)) {
             return;
         }
         foxglove_msgs::SceneUpdate update;
@@ -1015,6 +1036,8 @@ class GazeboAutoVisualizer {
     std::map<std::string, foxglove_msgs::SceneEntity> height_projection_entities_;
     ros::Publisher height_projection_ar_pub_;
     std::map<std::string, foxglove_msgs::SceneEntity> height_projection_ar_entities_;
+    std::unique_ptr<gazebo_sim_visualization::PublishCadence> height_projection_cadence_;
+    std::unique_ptr<gazebo_sim_visualization::PublishCadence> height_projection_ar_cadence_;
     ros::Publisher scene_ar_pub_;
     std::map<std::string, foxglove_msgs::SceneEntity> ar_identity_entities_;
     ros::Publisher world_boundary_pub_;
@@ -1053,6 +1076,7 @@ class GazeboAutoVisualizer {
     double uav_rotor_speed_transition_rad_s_{90.0};
     double uav_rotor_speed_airborne_rad_s_{60.0};
     double joint_transform_publish_rate_{30.0};
+    double height_projection_publish_rate_{10.0};
     std::unique_ptr<gazebo_sim_visualization::PublishCadence> joint_transform_cadence_;
     std::string tracked_fs150_models_csv_;
     std::string tracked_scout_models_csv_;
