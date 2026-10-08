@@ -119,7 +119,7 @@ Bootstrap projectBootstrap(const Json::Value& value) {
   if(!value["displayRelays"].isArray())throw std::invalid_argument("displayRelays must be an array");
   for(const auto& relay:value["displayRelays"]) {
     if(!relay.isObject())throw std::invalid_argument("display relay must be an object");
-    const std::set<std::string> allowed{"source","topic","messageType","maxRateHz","robotKind"};for(const auto& field:relay.getMemberNames())if(!allowed.count(field))throw std::invalid_argument("unknown display relay field");
+    const std::set<std::string> allowed{"source","topic","messageType"};const auto fields=relay.getMemberNames();if(std::set<std::string>(fields.begin(),fields.end())!=allowed)throw std::invalid_argument("bootstrap display relay requires exactly source/topic/messageType");
     Json::Value projected;projected["source"]=text(relay["source"],"relay source");projected["topic"]=text(relay["topic"],"relay topic");projected["messageType"]=text(relay["messageType"],"relay messageType");
     std::string kind="global";const auto source=projected["source"].asString();for(const auto& item:classes)if(source.compare(0,item.first.size()+1,item.first+"/")==0)kind=item.second;
     projected["robotKind"]=kind;request["displayRelays"].append(projected);

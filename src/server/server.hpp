@@ -21,11 +21,14 @@ class Server {
   void publishLoop();
   void replaceSnapshot();
   void wakePublisher();
+  Json::Value ratesStatus() const;
   std::string identity_;
   InputPool input_;
   std::map<std::string,std::shared_ptr<Instance>> instances_; // Control-loop owner only.
   std::shared_ptr<const std::vector<std::shared_ptr<Instance>>> snapshot_;
   std::shared_ptr<const Rates> rates_;
+  std::uint64_t rates_revision_{1}; // Domain-worker owner; never persisted.
+  std::int64_t rates_applied_steady_ns_{0};
   std::atomic<bool> stopping_{false};
   std::thread publisher_;
   std::mutex failure_mutex_;

@@ -99,11 +99,13 @@ TEST(Bootstrap, HeightOffScoutBindingAndDescriptionOnlyArePreserved) {
   // Existing canonical rosters may also include the non-scene description row.
   projected.request["robots"].append(projected.request["descriptions"][0]);EXPECT_NO_THROW(parseInstance(projected.request));
 }
-TEST(Bootstrap, RelayClassProjectionRemovesLegacyIndividualBudget) {
+TEST(Bootstrap, RelayClassProjectionRejectsLegacyIndividualBudget) {
   auto value=envelope();value["robots"].append(fullRobot("uav1"));
-  value["displayRelays"]=parseJson("[{\"source\":\"/uav1/path\",\"topic\":\"/xgc/display/uav1/path\",\"messageType\":\"nav_msgs/Path\",\"maxRateHz\":3},{\"source\":\"/map\",\"topic\":\"/xgc/display/map\",\"messageType\":\"nav_msgs/OccupancyGrid\",\"maxRateHz\":7}]");
+  value["displayRelays"]=parseJson("[{\"source\":\"/uav1/path\",\"topic\":\"/xgc/display/uav1/path\",\"messageType\":\"nav_msgs/Path\"},{\"source\":\"/map\",\"topic\":\"/xgc/display/map\",\"messageType\":\"nav_msgs/OccupancyGrid\"}]");
   const auto result=projectBootstrap(value);EXPECT_EQ(result.request["displayRelays"][0]["robotKind"],"fs150");
   EXPECT_EQ(result.request["displayRelays"][1]["robotKind"],"global");EXPECT_FALSE(result.request["displayRelays"][0].isMember("maxRateHz"));
+  value["displayRelays"][0]["maxRateHz"]=3;EXPECT_THROW(projectBootstrap(value),std::invalid_argument);value["displayRelays"][0].removeMember("maxRateHz");
+  value["displayRelays"][0]["robotKind"]="scout";EXPECT_THROW(projectBootstrap(value),std::invalid_argument);
   EXPECT_NO_THROW(projectBootstrap(envelope()));value["context"]["worldClock"]="guess";EXPECT_THROW(projectBootstrap(value),std::invalid_argument);
 }
 TEST(InstanceConfig, InvalidSceneLabelNamespaceFailsBeforeActivation) {

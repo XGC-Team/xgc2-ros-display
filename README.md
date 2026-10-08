@@ -3,7 +3,7 @@
 `xgc2-ros-visualizer` provides one C++ ROS server, one executable
 `xgc2_ros_visualizer_node`, and the canonical catkin package
 `xgc2_ros_visualizer`. A server owns a fixed input pool (default 2, maximum 32
-workers), one publication scheduler, and a bounded Unix HTTP control loop.
+workers), one publication scheduler, and a bounded XRPC Unix HTTP control loop plus one fixed domain worker.
 Robots, descriptions and relays are instance data. Adding robots does not create
 application threads, helper processes or `robot_state_publisher` children.
 Core uses its ordinary supervised process definition and a frozen startup file;
@@ -17,33 +17,43 @@ planning, map production and Viewer rendering remain their owning products.
 
 ## Startup and RPC
 
-Source a ROS Noetic environment and select its master/IP normally. Required
-private parameters are `socket_path` (an absent absolute Unix socket path) and
-`server_instance_id`. Optional parameters are `callback_workers` (1–32),
-`rates_json` (an object overlaying defaults), `world_clock` (`wall` or
-`simulation`, default `wall`) and `initial_instance_file`. The clock is immutable
+Source a ROS Noetic environment and select its master/IP normally. The
+supervisor supplies allocated `ROS_HOME` and `ROS_LOG_DIR` locations for native
+cache/log ownership. Required
+process options are `--socket` (a socket path in a supervisor-granted private
+0700 runtime directory) and `--target-id`. The provider creates its incarnation.
+Optional options are `--callback-workers` (1–32), `--rates-json` (an object
+overlaying defaults), `--world-clock` (`wall` or `simulation`, default `wall`)
+and `--initial-instance-file`. The product reads no ROS master bootstrap
+parameters; private product parameter aliases are rejected. The clock is immutable
 and selected before ROS initialization; an existing `/use_sim_time` remap is
 preserved. Do not separately pass `_use_sim_time`.
 
 ```sh
 rosrun xgc2_ros_visualizer xgc2_ros_visualizer_node \
-  _socket_path:=/tmp/visualizer.sock _server_instance_id:=my-run \
-  _world_clock:=simulation _initial_instance_file:=/private/input.json
-curl --unix-socket /tmp/visualizer.sock http://localhost/v1/status
+  --socket "$XGC_RUNTIME_DIR/visualizer.sock" --target-id local-agent \
+  --world-clock simulation --initial-instance-file /private/input.json
+curl --unix-socket "$XGC_RUNTIME_DIR/visualizer.sock" \
+  -H 'X-Request-ID: discover-1' -H 'X-Xrpc-Timeout-Ms: 3000' \
+  http://localhost/v1/describe
 ```
 
-The socket is mode 0600. It is never adopted or replaced if already present.
-Control requests have fixed client/header/body limits and finite deadlines.
+The socket is mode 0600. XRPC owns the endpoint lease, framing, admission and
+finite deadlines. Every request carries `X-Request-ID` and `X-Xrpc-Timeout-Ms`;
+all routes except explicit GET discovery also require the returned
+`X-Xrpc-Instance-ID`. The complete [service contract](docs/visualization-v1.md)
+defines resource policy, application receipts and write ownership. Runtime
+policy uses startup-snapshotted `XGC2_XRPC_` settings and explicit ceilings.
 
 | Request | Behavior |
 | --- | --- |
-| `GET /health` | Server identity, readiness and fixed callback-worker count |
+| `GET /v1/health` | Server identity, readiness and fixed callback-worker count |
 | `GET /v1/status` | Membership, resource counts, rates and publication counters |
 | `GET /v1/instances/<id>` | Observe an existing instance; 404 never creates one |
 | `PUT /v1/instances/<id>` | Validate and create complete membership; identical retry is a no-op, different content is 409 |
 | `DELETE /v1/instances/<id>` | Idempotently remove only that instance; wait for its publication fence |
-| `GET /v1/rates` | Return the current complete table in `rates` |
-| `PUT /v1/rates` | Atomically replace the complete validated table; invalid candidates leave it unchanged |
+| `GET /v1/rates` | Complete table and desired/applied/persisted revisions |
+| `PUT /v1/rates` | `{expectedRevision, rates}` atomically replaces the complete table; invalid/stale candidates leave it unchanged |
 
 A native instance request contains exactly `robots`, `descriptions`,
 `worldBoundary`, `settings` and `displayRelays`. The first two are the existing
@@ -129,7 +139,8 @@ OccupancyGrid, Path and PoseArray full-state messages are accepted. The relay
 receives serialized bytes once and publishes the same immutable pointer using
 the original type/MD5/definition. It does not decode, rewrite Header sequence,
 convert fields, replay previously published samples or budget the source itself.
-Legacy bootstrap `maxRateHz` is replaced by the kind/channel table.
+Bootstrap relay records carry exactly `source`, `topic` and `messageType`; the
+frozen Robot roster determines kind. Individual relay rate fields are rejected.
 
 Membership, queues, latest-message retention and history point counts are
 bounded. Variable ROS payload bytes and ROS serialization/transport allocations
@@ -139,7 +150,7 @@ byte-memory limit.
 ## Build, package and validation
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/path/to/prefix
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DXgcXrpc_DIR=/path/to/xrpc/lib/cmake/XgcXrpc -DCMAKE_INSTALL_PREFIX=/path/to/prefix
 cmake --build build -j2
 cmake --build build --target tests -j2
 cmake --build build --target run_tests -j2
@@ -147,15 +158,21 @@ catkin_test_results build/test_results
 cmake --install build
 ```
 
-The native package is `ros-noetic-xgc2-ros-visualizer`, version 0.3.0-1. It installs
+The XRPC transport translation unit requires C++20 and the installed
+`XgcXrpc` 0.1 CMake package. Its private facade keeps the existing Noetic ROS
+message translation units on C++14; the transport SDK is not copied into this
+product.
+
+The native package is `ros-noetic-xgc2-ros-visualizer`, version 0.4.0-1. It installs
 one executable, the runtime/contract libraries and public canonical headers.
 Consumers use `find_package(catkin REQUIRED COMPONENTS xgc2_ros_visualizer)`.
 The installed Robot SDK ABI dependency is at least 0.2.0-16.
 
-`.xgc2/scripts/build_debs_in_docker.sh` uses the pinned Noetic build image and
-installs published SDK dependencies only inside independent containers. It runs
+`.xgc2/scripts/build_debs_in_docker.sh` requires an immutable Noetic build image with an
+explicit preprovisioned C++20 `--cxx` compiler, and installs published SDK dependencies only inside independent containers. It runs
 source tests, produces the Deb, then installs that Deb in a second container and
-checks the catkin exports, linkage and actual executable. This build requires
+checks the catkin exports, linkage and actual executable. CI selects these resources through `XGC2_FOCAL_CXX_BUILD_IMAGE` and
+`XGC2_FOCAL_CXX`; images are selected by digest. This build requires
 network access to production APT for dependencies; it never uses an active Core
 container as its builder.
 

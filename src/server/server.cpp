@@ -2,15 +2,19 @@
 #include <algorithm>
 #include <chrono>
 #include <regex>
+#include <limits>
+#include <set>
 #include <stdexcept>
 namespace xgc2_ros_visualizer {
 namespace {
-RpcReply error(int status,const std::string& message) {Json::Value body;body["ok"]=false;body["error"]=message;return {status,body};}
+RpcReply error(int status,const std::string& message) {Json::Value body;body["ok"]=false;body["error"]["code"]=status==400||status==405?"invalid_argument":status==404?"not_found":status==409?"conflict":status==503?"unavailable":"internal";body["error"]["message"]=message;return {status,body};}
 RpcReply success(const Json::Value& body) {return {200,body};}
+std::int64_t steadyNs() {return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();}
 }
 Server::Server(std::string identity,std::size_t workers,Rates rates,const volatile std::sig_atomic_t* signal_stop)
     : identity_(std::move(identity)),input_(workers),snapshot_(new std::vector<std::shared_ptr<Instance>>),rates_(new Rates(std::move(rates))),signal_stop_(signal_stop) {
-  if(identity_.empty()||identity_.size()>128) throw std::invalid_argument("server_instance_id must contain 1..128 bytes");
+  if(identity_.empty()||identity_.size()>128) throw std::invalid_argument("provider incarnation must contain 1..128 bytes");
+  rates_applied_steady_ns_=steadyNs();
   publisher_=std::thread(&Server::publishLoop,this);
 }
 Server::~Server() {stop();}
@@ -48,18 +52,34 @@ void Server::stop() {
   instances_.clear();replaceSnapshot();input_.stop();
 }
 void Server::rethrowFailure() {std::lock_guard<std::mutex> lock(failure_mutex_);if(failure_)std::rethrow_exception(failure_);}
+Json::Value Server::ratesStatus() const {
+  Json::Value result;result["ok"]=true;result["rates"]=std::atomic_load(&rates_)->json();
+  result["desiredRevision"]=Json::UInt64(rates_revision_);result["appliedRevision"]=Json::UInt64(rates_revision_);
+  result["persistedRevision"]=Json::Value();result["state"]="applied";result["appliedAtSteadyNs"]=Json::Int64(rates_applied_steady_ns_);
+  return result;
+}
 RpcReply Server::route(const std::string& method,const std::string& path,const Json::Value& body) {
   if(stopping_.load())return error(503,"server is stopping");
   try {
-    if(path=="/health"&&method=="GET") {
+    if(path=="/v1/health"&&method=="GET") {
       Json::Value result;result["ok"]=true;result["instanceId"]=identity_;result["ready"]=true;result["callbackWorkers"]=Json::UInt64(input_.size());return success(result);
     }
     if(path=="/v1/rates") {
-      if(method=="GET") {Json::Value result;result["ok"]=true;result["rates"]=std::atomic_load(&rates_)->json();return success(result);}
+      if(method=="GET") return success(ratesStatus());
       if(method=="PUT") {
-        auto prepared=parseRates(body,true);std::shared_ptr<const Rates> replacement(new Rates(std::move(prepared)));std::atomic_store(&rates_,replacement);
+        if(!body.isObject())return error(400,"rate update must be an object");
+        const auto names=body.getMemberNames();const std::set<std::string> required{"expectedRevision","rates"};
+        if(std::set<std::string>(names.begin(),names.end())!=required||(body["expectedRevision"].type()!=Json::intValue&&body["expectedRevision"].type()!=Json::uintValue)||!body["expectedRevision"].isUInt64()||!body["expectedRevision"].asUInt64())
+          return error(400,"rate update requires exactly positive expectedRevision and complete rates");
+        if(body["expectedRevision"].asUInt64()!=rates_revision_)return error(409,"rate revision conflict");
+        if(rates_revision_==std::numeric_limits<std::uint64_t>::max())return error(409,"rate revision exhausted");
+        auto prepared=parseRates(body["rates"],true);std::shared_ptr<const Rates> replacement(new Rates(std::move(prepared)));std::atomic_store(&rates_,replacement);
+        // This publication is the application boundary. A tick already holding
+        // the old immutable snapshot finishes with that snapshot; subsequent
+        // ticks load the new complete table, without partial channel updates.
+        ++rates_revision_;rates_applied_steady_ns_=steadyNs();
         wakePublisher();
-        Json::Value result;result["ok"]=true;result["rates"]=replacement->json();return success(result);
+        return success(ratesStatus());
       }
       return error(405,"rates supports GET or PUT");
     }

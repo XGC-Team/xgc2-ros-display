@@ -17,6 +17,7 @@ import time
 import urllib.parse
 import xml.etree.ElementTree as ET
 import xmlrpc.client
+import uuid
 
 
 class UnixHTTP(http.client.HTTPConnection):
@@ -122,33 +123,52 @@ def main(binary):
             private_source = tcpros_base.init_tcpros_server()
             private_source.start_server()
             private_source.tcp_ros_server.server_sock.listen(256)
-            def rpc(method, path, body=None, expected=200):
+            instance_id = None
+            rate_revision = 1
+            def rpc(method, path, body=None, expected=200, rate_expected=None, wrap_rates=True):
+                nonlocal rate_revision
+                headers = {'Content-Type': 'application/json', 'X-Request-ID': uuid.uuid4().hex,
+                           'X-Xrpc-Timeout-Ms': '3000'}
+                if instance_id is not None:
+                    headers['X-Xrpc-Instance-ID'] = instance_id
+                if method == 'PUT' and path == '/v1/rates' and wrap_rates:
+                    body = dict(expectedRevision=rate_revision if rate_expected is None else rate_expected, rates=body)
                 client = UnixHTTP(probe_socket)
                 try:
                     client.request(method, path, None if body is None else json.dumps(body),
-                                   {'Content-Type': 'application/json'})
+                                   headers)
                     response = client.getresponse()
                     status = response.status
+                    require(response.getheader('X-Request-ID') == headers['X-Request-ID'], 'response request identity lost')
+                    if instance_id is not None and status != 409:
+                        require(response.getheader('X-Xrpc-Instance-ID') == instance_id, 'response instance identity lost')
                     result = json.loads(response.read(1024 * 1024 + 1))
                 finally:
                     client.close()
                 require(status == expected, '%s %s: %s %s' % (method, path, status, result))
+                if path == '/v1/rates' and status == 200:
+                    rate_revision = result['appliedRevision']
+                    require(result['desiredRevision'] == rate_revision and result['persistedRevision'] is None,
+                            'rate receipt conflates desired/applied/persisted')
                 return result
             initial = os.path.join(work, 'input.json')
             with open(initial, 'w') as stream:
                 json.dump(dict(instanceId='initial-zero', robots=[], context=dict(
                     runMode='simulation', worldClock='simulation', worldBoundary=None),
                     settings={}, displayRelays=[]), stream)
-            server = subprocess.Popen([binary, '_socket_path:=' + probe_socket,
-                '_server_instance_id:=private-server', '_callback_workers:=2',
-                '_world_clock:=simulation', '_initial_instance_file:=' + initial,
+            server = subprocess.Popen([binary, '--socket', probe_socket,
+                '--target-id', 'private-probe', '--callback-workers', '2',
+                '--world-clock', 'simulation', '--initial-instance-file', initial,
                 '/use_sim_time:=/xgc2_ros_visualizer/use_sim_time'],
                 stdout=logfile, stderr=logfile, start_new_session=True)
             processes.append(server)
             wait(lambda: os.path.exists(probe_socket) or server.poll() is not None,
                  'server socket absent')
             require(server.poll() is None, 'server exited during bootstrap')
-            require(rpc('GET', '/health')['callbackWorkers'] == 2, 'wrong input pool size')
+            description = rpc('GET', '/v1/describe')
+            instance_id = description['service_ref']['instance_id']
+            require(description['service_ref']['target_id'] == 'private-probe', 'wrong ServiceRef target')
+            require(rpc('GET', '/v1/health')['callbackWorkers'] == 2, 'wrong input pool size')
             require(rpc('GET', '/v1/instances/initial-zero')['ready'], 'zero bootstrap not ready')
             ready = []
             ready_sub = rospy.Subscriber('/xgc/robot_scene/ready', Empty, lambda _: ready.append(True), queue_size=1)
@@ -183,6 +203,17 @@ def main(binary):
             rpc('GET', '/v1/instances/initial-zero', expected=404)
             baseline = resources(server.pid)
             default_rates = rpc('GET', '/v1/rates')['rates']
+            original_revision = rate_revision
+            rpc('PUT', '/v1/rates', default_rates, 400, wrap_rates=False)
+            require(rate_revision == original_revision, 'retired flat rate body mutated state')
+            rpc('PUT', '/v1/rates', default_rates)
+            rpc('PUT', '/v1/rates', default_rates, 409, rate_expected=original_revision)
+            receipt = rpc('GET', '/v1/rates')
+            require(receipt['appliedRevision'] == original_revision + 1, 'stale CAS changed rates')
+            rpc('GET', '/health', expected=404)
+            storage = rpc('GET', '/v1/xrpc/storage')
+            require(storage['rosCache']['root'] == work and storage['rosLogs']['root'] == os.path.join(work, 'roslog'),
+                    'native writes do not expose their explicit allocations')
             bad = copy.deepcopy(default_rates); bad['fs150']['path'] = 0
             rpc('PUT', '/v1/rates', bad, 400)
             require(rpc('GET', '/v1/rates')['rates'] == default_rates, 'bad rate changed configuration')
@@ -372,11 +403,45 @@ def main(binary):
             require(not os.path.exists(probe_socket), 'owned RPC socket leaked')
             wait(lambda: all(p.get_num_connections() == 1 for p in source_pubs), 'server source subscriptions leaked')
             require(rospy.get_param('/foreign/visual_robot_description') == 'foreign-owned', 'Stop erased foreign parameter')
+            for arguments in (["_server_instance_id:=old"], ["--callback-workers", "0"],
+                              ["--world-clock", "guess"], ["--target-id", "duplicate"]):
+                rejected = subprocess.run([binary, '--socket', os.path.join(work, 'invalid.sock'),
+                    '--target-id', 'private-probe'] + arguments, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, timeout=3)
+                require(rejected.returncode != 0 and not os.path.exists(os.path.join(work, 'invalid.sock')),
+                        'invalid/retired startup input created a provider')
+            missing_allocation = dict(os.environ);missing_allocation.pop('ROS_HOME', None)
+            rejected = subprocess.run([binary, '--socket', os.path.join(work, 'invalid.sock'),
+                '--target-id', 'private-probe'], env=missing_allocation, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, timeout=3)
+            require(rejected.returncode != 0, 'missing cache allocation fell back to HOME')
+            # Stale master parameters have no authority over explicit CLI bootstrap.
+            rospy.set_param('/xgc2_ros_visualizer/initial_instance_file', initial)
+            rospy.set_param('/xgc2_ros_visualizer/server_instance_id', 'old-provider')
+            previous_incarnation = instance_id
+            restarted = subprocess.Popen([binary, '--socket', probe_socket,
+                '--target-id', 'private-probe', '--callback-workers', '2', '--world-clock', 'simulation'],
+                stdout=logfile, stderr=logfile, start_new_session=True)
+            processes.append(restarted)
+            wait(lambda: os.path.exists(probe_socket) or restarted.poll() is not None, 'restart socket absent')
+            require(restarted.poll() is None, 'restart failed')
+            rpc('GET', '/v1/health', expected=409)
+            instance_id = None
+            fresh = rpc('GET', '/v1/describe')['service_ref']
+            instance_id = fresh['instance_id']
+            require(instance_id != previous_incarnation, 'restart retained old provider incarnation')
+            restored = rpc('GET', '/v1/rates')
+            require(restored['appliedRevision'] == 1 and restored['rates'] == default_rates,
+                    'ephemeral rate state was falsely persisted')
+            require(rpc('GET', '/v1/status')['instanceCount'] == 0, 'restart resurrected old native instances')
+            restarted.send_signal(signal.SIGTERM);restarted.wait(timeout=3)
+            require(restarted.returncode == 0, 'restarted provider failed to stop')
             print(json.dumps(dict(ok=True, scope='private ROS graph; not station/scientific acceptance',
                 relay_received=relay_counts, robots20=twenty, robots100=hundred,
                 source_history_points=path_size, simulated_rtf=3, delete20_seconds=delete20,
                 delete100_seconds=delete100, low_rate_stop_seconds=stop_seconds,
                 zero_robot_readiness=True, fixed_callback_workers=2, publisher_workers=1,
+                restart_incarnation_fenced=True, rate_cas_conflict=True, ephemeral_restart=True,
                 no_child_processes=True), sort_keys=True))
             rospy.signal_shutdown('private probe complete')
         except Exception:

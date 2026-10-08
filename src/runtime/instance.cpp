@@ -482,6 +482,7 @@ void Instance::deactivate() {
 }
 Json::Value Instance::status() const {
   const auto& p=*impl_;Json::Value result(Json::objectValue);result["ok"]=true;result["id"]=p.id;result["ready"]=p.active.load();result["robotCount"]=Json::UInt64(p.robots.size());result["descriptionCount"]=Json::UInt64(p.descriptions.size());result["relayCount"]=Json::UInt64(p.config.relays.size());
+  result["configuration"]["desiredRevision"]=1;result["configuration"]["appliedRevision"]=p.active.load()?Json::Value(1):Json::Value();result["configuration"]["persistedRevision"]=Json::Value();result["configuration"]["immutable"]=true;
   for(std::size_t k=0;k<kKindCount;++k)for(std::size_t c=0;c<kChannelCount;++c)if(applicable(static_cast<RateKind>(k),static_cast<Channel>(c))) result["publicationCounters"][kindName(static_cast<RateKind>(k))][channelName(static_cast<Channel>(c))]=Json::UInt64(p.counts[k][c].load());
   std::uint64_t relay_count=0;for(const auto& relay:p.relays)relay_count+=relay->count();result["relayPublications"]=Json::UInt64(relay_count);return result;
 }
