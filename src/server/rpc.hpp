@@ -34,7 +34,8 @@ struct RpcOptions {
 // work ends. Runtime policy is resolved once from the supplied startup snapshot.
 class RpcServer {
  public:
-  RpcServer(std::string socket_path, RpcHandler handler, RpcOptions options);
+  RpcServer(std::string socket_path, RpcHandler handler, RpcOptions options,
+            std::function<void()> quiesce_native = {});
   ~RpcServer();
   static std::string newInstanceId();
 
@@ -43,7 +44,9 @@ class RpcServer {
   RpcServer(RpcServer&&) = delete;
   RpcServer& operator=(RpcServer&&) = delete;
 
-  // Call once. Return only after the domain worker is quiescent. In-progress
+  // Call once. Quiesce the domain worker and native owner before SDK drain
+  // releases the endpoint lease. The native callback's captures outlive this host.
+  // Return only after both are quiescent. In-progress
   // native work is never represented as rolled back by transport cancellation.
   void run(const std::atomic<bool>& stopping);
   void stop() noexcept;

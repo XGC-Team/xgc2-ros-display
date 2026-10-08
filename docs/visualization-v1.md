@@ -63,9 +63,15 @@ never runs in the HTTP IO handler. The preallocated handoff is bounded by
 `HOST_MAX_IN_FLIGHT`, including active work. Expired or cancelled queued calls do
 not begin native work. Cancellation after dispatch does not roll back activation,
 rate application or deletion. The endpoint lease and admission remain retained
-until actual work is quiescent, including during shutdown. A slow native operation
+until actual work is quiescent, including during shutdown. The host finishes its
+domain worker, stops the native publication scheduler and input pool, and fences
+owned output deletion before SDK drain can release the endpoint lease.
+A slow native operation
 can therefore outlive a caller or drain deadline; lease release never asserts
 that a cancelled operation has ended.
+After an owner crash, restart uses the shared lease's unreachable-socket reclaim:
+the exclusive lock, ownership, finite reachability proof and unchanged inode are
+checked before deletion. A live endpoint or non-socket path is never reclaimed.
 
 Runtime environment is snapshotted once by the process root and passed to XRPC.
 The product declares 32 connections/in-flight calls, 16 KiB headers, 1 MiB

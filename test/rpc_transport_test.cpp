@@ -22,13 +22,13 @@ class RpcTransportTest : public ::testing::Test {
     client_.reset(); server_.reset();
     ::unlink((path_ + ".xrpc.lock").c_str()); EXPECT_EQ(0, ::rmdir(directory_.c_str()));
   }
-  void start(RpcHandler handler = {}, std::vector<std::pair<std::string,std::string>> environment = {}) {
+  void start(RpcHandler handler = {}, std::vector<std::pair<std::string,std::string>> environment = {}, std::function<void()> quiesce_native = {}) {
     if (!handler) handler = [this](const std::string& method, const std::string& path, const Json::Value& body) {
       ++calls_; Json::Value result; result["method"] = method; result["path"] = path; result["body"] = body;
       return RpcReply{path == "/missing" ? 404 : 200, result};
     };
     RpcOptions options; options.target_id="test-target"; options.instance_id="test-incarnation"; options.environment=std::move(environment);
-    server_.reset(new RpcServer(path_, std::move(handler), std::move(options)));
+    server_.reset(new RpcServer(path_, std::move(handler), std::move(options),std::move(quiesce_native)));
     client_.reset(new xgc2::xrpc::HttpClient(path_, {}, "test-incarnation"));
     worker_ = std::thread([this] { server_->run(stopping_); });
   }
@@ -108,7 +108,7 @@ TEST_F(RpcTransportTest, RejectsInvalidRuntimePolicyBeforeEndpointAdmission) {
 TEST_F(RpcTransportTest, DomainWorkDoesNotBlockPolicyAndCancelledQueuedWorkNeverStarts) {
   std::promise<void> entered,release;auto unlocked=release.get_future().share();
   std::atomic<int> mutations{0};
-  start([&](const std::string&,const std::string&,const Json::Value&){
+  start([&,unlocked](const std::string&,const std::string&,const Json::Value&){
     if(++mutations==1){entered.set_value();unlocked.wait_for(seconds(3));}
     return RpcReply{200,Json::Value(Json::objectValue)};
   });
@@ -127,7 +127,7 @@ TEST_F(RpcTransportTest, DomainWorkDoesNotBlockPolicyAndCancelledQueuedWorkNever
 }
 TEST_F(RpcTransportTest, StopRetainsLeaseUntilNativeWorkReallyEnds) {
   std::promise<void> entered,release;auto unlocked=release.get_future().share();
-  start([&](const std::string&,const std::string&,const Json::Value&){entered.set_value();unlocked.wait_for(seconds(3));return RpcReply{200,{}};});
+  start([&,unlocked](const std::string&,const std::string&,const Json::Value&){entered.set_value();unlocked.wait_for(seconds(3));return RpcReply{200,{}};});
   auto active=std::async(std::launch::async,[&]{try{exchange("PUT","/entities","{}");}catch(const std::exception&){};});
   EXPECT_EQ(std::future_status::ready,entered.get_future().wait_for(seconds(1)));
   server_->stop();
@@ -153,7 +153,7 @@ TEST_F(RpcTransportTest, SharedDiagnosticsHaveBoundedRedactedRecordsAndLevelCas)
 }
 TEST_F(RpcTransportTest, CancelledNativeWorkStillConsumesSharedAdmission) {
   std::promise<void> entered,release;auto unlocked=release.get_future().share();
-  start([&](const std::string&,const std::string&,const Json::Value&){entered.set_value();unlocked.wait_for(seconds(3));return RpcReply{200,{}};},
+  start([&,unlocked](const std::string&,const std::string&,const Json::Value&){entered.set_value();unlocked.wait_for(seconds(3));return RpcReply{200,{}};},
         {{"XGC2_XRPC_HOST_MAX_IN_FLIGHT","1"}});
   xgc2::xrpc::HttpClient limited(path_,{},"test-incarnation");
   auto active=std::async(std::launch::async,[&]{
@@ -164,6 +164,17 @@ TEST_F(RpcTransportTest, CancelledNativeWorkStillConsumesSharedAdmission) {
   active.get();
   // Cancellation is an outcome, not release of an executing native handler.
   EXPECT_EQ(503,exchange("GET","/v1/xrpc/status").status);
-  release.set_value();
+  release.set_value();server_->stop();worker_.join();
+}
+TEST_F(RpcTransportTest, LeaseAlsoFencesNativeOwnerQuiescenceAfterCallsEnd) {
+  std::promise<void> entered,release;auto unlocked=release.get_future().share();
+  std::atomic<int> native_stops{0};
+  start({}, {}, [&,unlocked]{++native_stops;entered.set_value();unlocked.wait_for(seconds(3));});
+  server_->stop();
+  EXPECT_EQ(std::future_status::ready,entered.get_future().wait_for(seconds(1)));
+  RpcOptions options;options.target_id="test-target";options.instance_id="replacement";
+  EXPECT_THROW(RpcServer(path_,[](const std::string&,const std::string&,const Json::Value&){return RpcReply{200,{}};},options),std::exception);
+  release.set_value();worker_.join();server_.reset();
+  EXPECT_EQ(1,native_stops.load());EXPECT_NE(0,::access(path_.c_str(),F_OK));
 }
 }} // namespace

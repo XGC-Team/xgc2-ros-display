@@ -434,14 +434,47 @@ def main(binary):
             require(restored['appliedRevision'] == 1 and restored['rates'] == default_rates,
                     'ephemeral rate state was falsely persisted')
             require(rpc('GET', '/v1/status')['instanceCount'] == 0, 'restart resurrected old native instances')
-            restarted.send_signal(signal.SIGTERM);restarted.wait(timeout=3)
-            require(restarted.returncode == 0, 'restarted provider failed to stop')
+            rpc('PUT', '/v1/instances/crash-owned', instance())
+            rpc('PUT', '/v1/rates', low)
+            crash_incarnation = instance_id
+            restarted.send_signal(signal.SIGKILL);restarted.wait(timeout=3)
+            require(restarted.returncode == -signal.SIGKILL, 'crash fixture did not kill its owned provider')
+            require(os.path.exists(probe_socket), 'crash fixture did not retain the stale socket')
+            recovered = subprocess.Popen([binary, '--socket', probe_socket,
+                '--target-id', 'private-probe', '--callback-workers', '2', '--world-clock', 'simulation'],
+                stdout=logfile, stderr=logfile, start_new_session=True)
+            processes.append(recovered)
+            instance_id = None
+            recovery_reference = None
+            def recovery_ready():
+                nonlocal recovery_reference
+                require(recovered.poll() is None, 'crash replacement exited')
+                try:
+                    recovery_reference = rpc('GET', '/v1/describe')['service_ref']
+                    return True
+                except (OSError, http.client.HTTPException):
+                    return False
+            wait(recovery_ready, 'crash replacement did not acquire the stale endpoint')
+            instance_id = crash_incarnation
+            rpc('GET', '/v1/health', expected=409)
+            instance_id = recovery_reference['instance_id']
+            require(instance_id != crash_incarnation, 'crash replacement reused provider incarnation')
+            require(rpc('GET', '/v1/status')['instanceCount'] == 0, 'crash recovery resurrected native membership')
+            restored = rpc('GET', '/v1/rates')
+            require(restored['appliedRevision'] == 1 and restored['rates'] == default_rates,
+                    'crash recovery imported ephemeral rate state')
+            rpc('PUT', '/v1/instances/recovered-zero', instance())
+            rpc('DELETE', '/v1/instances/recovered-zero')
+            recovered.send_signal(signal.SIGTERM);recovered.wait(timeout=3)
+            require(recovered.returncode == 0 and not os.path.exists(probe_socket),
+                    'crash replacement failed native operation or endpoint cleanup')
             print(json.dumps(dict(ok=True, scope='private ROS graph; not station/scientific acceptance',
                 relay_received=relay_counts, robots20=twenty, robots100=hundred,
                 source_history_points=path_size, simulated_rtf=3, delete20_seconds=delete20,
                 delete100_seconds=delete100, low_rate_stop_seconds=stop_seconds,
                 zero_robot_readiness=True, fixed_callback_workers=2, publisher_workers=1,
                 restart_incarnation_fenced=True, rate_cas_conflict=True, ephemeral_restart=True,
+                sigkill_stale_endpoint_recovered=True, crash_incarnation_fenced=True,
                 no_child_processes=True), sort_keys=True))
             rospy.signal_shutdown('private probe complete')
         except Exception:

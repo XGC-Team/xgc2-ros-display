@@ -48,8 +48,9 @@ void Server::publishLoop() {
 }
 void Server::stop() {
   stopping_.store(true);wakePublisher();if(publisher_.joinable())publisher_.join();
+  input_.stop();
   for(auto& item:instances_)item.second->deactivate();
-  instances_.clear();replaceSnapshot();input_.stop();
+  instances_.clear();replaceSnapshot();
 }
 void Server::rethrowFailure() {std::lock_guard<std::mutex> lock(failure_mutex_);if(failure_)std::rethrow_exception(failure_);}
 Json::Value Server::ratesStatus() const {

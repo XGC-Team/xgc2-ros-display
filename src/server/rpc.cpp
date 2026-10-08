@@ -38,6 +38,7 @@ RuntimePolicy resolvePolicy(const RpcOptions& options) {
 UnixOptions socketOptions(std::string path) {
   UnixOptions result;
   result.path = std::move(path);
+  result.existing = ExistingPath::ReclaimUnreachable;
   return result;
 }
 Json::Value policyJson(const RuntimePolicySnapshot& policy) {
@@ -93,10 +94,11 @@ void complete(const HttpReply& reply, RpcReply result, std::size_t limit) {
 
 class RpcServer::Impl {
  public:
-  Impl(std::string path, RpcHandler handler, RpcOptions options)
+  Impl(std::string path, RpcHandler handler, RpcOptions options, std::function<void()> quiesce_native)
       : policy_(resolvePolicy(options)), limits_(http_limits(policy_)),
         handler_(std::move(handler)), slots_(limits_.inflight),
         diagnostics_(policy_),
+        quiesce_native_(std::move(quiesce_native)),
         host_(socketOptions(path), [this](HttpRequest request, HttpReply reply) {
           dispatch(std::move(request), std::move(reply));
         }, limits_, HttpIdentity{options.instance_id, {"/v1/describe"}}) {
@@ -136,7 +138,7 @@ class RpcServer::Impl {
     host_.set_diagnostics(&diagnostics_, "xgc2.visualization");
     worker_ = std::thread([this] { work(); });
   }
-  ~Impl() { stop(); join(); }
+  ~Impl() { stop(); join(); quiesce(); }
   Json::Value effectivePolicy() const {
     auto result=policyJson(policy_.effective());
     const auto logging=policyJson(diagnostics_.effective_policy());
@@ -295,10 +297,18 @@ class RpcServer::Impl {
       std::lock_guard<std::mutex> lock(mutex_);
       stopping_.store(true);
     }
-    host_.request_stop();
+    // Wake the owner without releasing the endpoint. Its native quiescence
+    // phase still owns the lease; only the later SDK drain closes it.
+    host_.wake();
     wake_.notify_one();
   }
   void join() { if (worker_.joinable()) worker_.join(); }
+  void quiesce() {
+    if(!native_quiesced_) {
+      native_quiesced_=true;
+      if(quiesce_native_)quiesce_native_();
+    }
+  }
   void run(const std::atomic<bool>& external_stop) {
     while (!external_stop.load() && !stopping_.load())
       host_.poll(std::chrono::milliseconds(50));
@@ -307,10 +317,11 @@ class RpcServer::Impl {
       stopping_.store(true);
     }
     wake_.notify_one();
-    host_.drain();
-    // The SDK retains admission/lease for replies whose business work is still
-    // running. Join before returning to the native domain owner's teardown.
     join();
+    // No new RPC is dispatched while this owner is outside poll(). Complete
+    // native workers and publication fences before initiating SDK lease close.
+    quiesce();
+    host_.drain();
   }
   const std::string& socket_path() const noexcept { return host_.socket_path(); }
  private:
@@ -321,6 +332,8 @@ class RpcServer::Impl {
   std::vector<std::optional<Work>> slots_;
   Json::Value description_, storage_;
   Diagnostics diagnostics_;
+  std::function<void()> quiesce_native_;
+  bool native_quiesced_{false};
   std::mutex mutex_;
   std::condition_variable wake_;
   std::size_t head_{0}, tail_{0}, size_{0};
@@ -330,8 +343,8 @@ class RpcServer::Impl {
   std::thread worker_;
 };
 
-RpcServer::RpcServer(std::string path, RpcHandler handler, RpcOptions options)
-    : impl_(new Impl(std::move(path), std::move(handler), std::move(options))) {}
+RpcServer::RpcServer(std::string path, RpcHandler handler, RpcOptions options, std::function<void()> quiesce_native)
+    : impl_(new Impl(std::move(path), std::move(handler), std::move(options),std::move(quiesce_native))) {}
 RpcServer::~RpcServer() = default;
 std::string RpcServer::newInstanceId() { return xgc2::xrpc::new_instance_id(); }
 void RpcServer::run(const std::atomic<bool>& stopping) { impl_->run(stopping); }
