@@ -2,7 +2,7 @@
 set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 prefix=/opt/ros/noetic
-package=ros-noetic-xgc2-ros-display
+package=ros-noetic-xgc2-ros-visualizer
 expected="$(awk '/^version:/ {print $2; exit}' "$repo_root/.xgc2/product.yml")~focal"
 test "$(dpkg-query --admindir=/var/lib/dpkg -W -f='${db:Status-Status}' "$package")" = installed
 test "$(dpkg-query --admindir=/var/lib/dpkg -W -f='${Version}' "$package")" = "$expected"
@@ -16,6 +16,8 @@ for path in lib/libxgc2_ros_display_relays.so lib/pkgconfig/xgc2_ros_display_rel
 done
 binary="$prefix/lib/xgc2_ros_display_relays/xgc2_display_relays"
 test -x "$binary"
+test -x "$prefix/lib/xgc2_ros_visualizer/xgc2_ros_visualizer_node"
+test -s "$prefix/lib/libxgc2_ros_visualizer_contract.so"
 ldd "$binary" | tee /tmp/xgc2-display-node-ldd.txt
 ! grep -q 'not found' /tmp/xgc2-display-node-ldd.txt
 ldd "$prefix/lib/libxgc2_ros_display_relays.so" | tee /tmp/xgc2-display-library-ldd.txt

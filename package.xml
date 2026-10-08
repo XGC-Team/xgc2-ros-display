@@ -1,10 +1,12 @@
 <?xml version="1.0"?>
 <package format="2">
   <name>xgc2_ros_display_relays</name><version>0.1.0</version>
-  <description>Subscriber-gated, byte-preserving ROS1 display topic copies.</description>
+  <description>ROS1 visualization: subscriber-gated display copies and the unified visualization publisher.</description>
   <maintainer email="867768510@qq.com">XGC Team</maintainer><license>MIT</license>
   <buildtool_depend>catkin</buildtool_depend>
   <depend>roscpp</depend><depend>sensor_msgs</depend><depend>nav_msgs</depend><depend>geometry_msgs</depend>
+  <depend>foxglove_msgs</depend><depend>mavros_msgs</depend><depend>std_msgs</depend>
+  <depend>tf2_ros</depend><depend>visualization_msgs</depend><depend>xgc2_robot_visualization</depend>
   <build_depend>libjsoncpp-dev</build_depend><exec_depend>libjsoncpp1</exec_depend>
   <test_depend>rostest</test_depend><test_depend>rosunit</test_depend>
 </package>

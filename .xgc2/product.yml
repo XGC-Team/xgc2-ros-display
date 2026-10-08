@@ -1,9 +1,9 @@
 schema: xgc2.product.v1
-id: xgc2-ros-display
-name: XGC2 ROS Display
-version: 0.1.0-1
+id: xgc2-ros-visualizer
+name: XGC2 ROS Visualizer
+version: 0.2.0-1
 kind: ros1-apt
-summary: Subscriber-gated byte-preserving ROS1 display topic copies, reusable library and node.
+summary: ROS1 visualization product. Display copies stay subscriber-gated, and the publisher turns interface data into one visualization interface.
 ros:
   distro: noetic
   packages:
@@ -11,15 +11,16 @@ ros:
 apt:
   distribution: focal
   install:
-  - ros-noetic-xgc2-ros-display
+  - ros-noetic-xgc2-ros-visualizer
   packages:
-  - ros-noetic-xgc2-ros-display
+  - ros-noetic-xgc2-ros-visualizer
   package_distributions:
-    ros-noetic-xgc2-ros-display:
+    ros-noetic-xgc2-ros-visualizer:
     - focal
-  depends: []
+  depends:
+  - ros-noetic-xgc2-robot-visualization
 usage:
-  install: sudo apt install ros-noetic-xgc2-ros-display
+  install: sudo apt install ros-noetic-xgc2-ros-visualizer
   smoke_test: /opt/ros/noetic/lib/xgc2_ros_display_relays/xgc2_display_relays '[]'
 ownership:
   paths:
@@ -28,11 +29,15 @@ ownership:
   - /opt/ros/noetic/lib/libxgc2_ros_display_relays.so
   - /opt/ros/noetic/lib/pkgconfig/xgc2_ros_display_relays.pc
   - /opt/ros/noetic/lib/xgc2_ros_display_relays
+  - /opt/ros/noetic/lib/xgc2_ros_visualizer
+  - /opt/ros/noetic/lib/libxgc2_ros_visualizer_contract.so
+  - /opt/ros/noetic/include/xgc2_ros_visualizer
 release:
-  repository: XGC-Team/xgc2-ros-display
+  repository: XGC-Team/xgc2-ros-visualizer
   ref: main
   workflow: release.yml
   ci_workflow: ci.yml
-  dependency_policy: {}
+  dependency_policy:
+    xgc2-robot-visualization: rebuild
   apt_versions:
-    focal: 0.1.0-1~focal
+    focal: 0.2.0-1~focal

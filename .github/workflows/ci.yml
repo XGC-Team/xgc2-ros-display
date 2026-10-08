@@ -44,14 +44,14 @@ jobs:
           test -n "$product_version"
           python3 .xgc2/scripts/xgc2_artifact_manifest.py build \
             --deb-dir debs --output-dir .ci/build-manifests \
-            --product xgc2-ros-display --product-version "$product_version" \
+            --product xgc2-ros-visualizer --product-version "$product_version" \
             --distribution "${{ matrix.distribution }}" --architecture "${{ matrix.arch }}" \
             --source-sha "$GITHUB_SHA" --ci-run-id "$GITHUB_RUN_ID" \
             --ci-workflow "$GITHUB_WORKFLOW" --ci-workflow-ref "$GITHUB_WORKFLOW_REF"
       - name: Upload Deb and manifest
         uses: actions/upload-artifact@v4
         with:
-          name: xgc2-ros-display-debs-${{ matrix.name }}
+          name: xgc2-ros-visualizer-debs-${{ matrix.name }}
           path: |
             debs/*.deb
             .ci/build-manifests/*.json

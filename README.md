@@ -1,11 +1,14 @@
-# ROS1 display relays
+# ROS1 visualization
 
-This ROS1 C++ product owns subscriber-gated display topic copies. Its reusable
-catkin library serves both an embedding ROS process and the thin standalone
-node. Source owner: [XGC-Team/xgc2-ros-display](https://github.com/XGC-Team/xgc2-ros-display).
-The implementation does no algorithm conversion and is independent of Runtime
-business plugins and Gazebo. Core consumer migration is separate work; this repository does not retain an
-alternate Python relay.
+This ROS1 C++ product is `xgc2-ros-visualizer`. It owns subscriber-gated display
+topic copies and the publisher that turns interface data into one visualization
+interface. The catkin package stays `xgc2_ros_display_relays` so the relay
+install paths stay. The publisher node installs as
+`lib/xgc2_ros_visualizer/xgc2_ros_visualizer_node`. Source repository:
+[XGC-Team/xgc2-ros-visualizer](https://github.com/XGC-Team/xgc2-ros-visualizer).
+Gazebo shadow rendering is not in this package. The relay library does no
+algorithm conversion. Core consumer migration is separate work; this repository
+does not retain an alternate Python relay.
 
 Authority: `xgc2/process-catalog/current/platform/lichtblick-display-relays.json`.
 Reviewed authority SHA-256: `0f955708788b410fc3f3f0cd97df83ac07ff4daf32e434dff84abe31ddf69e16`.
@@ -85,12 +88,12 @@ ROS API reference: [AdvertiseOptions](https://github.com/ros/ros_comm/blob/noeti
 documents serialized header sequence rewriting; [serialization](https://github.com/ros/roscpp_core/blob/noetic-devel/roscpp_serialization/include/ros/serialization.h)
 provides the bounded streams used by the raw payload serializer.
 
-The first Noetic/Focal APT identity is `ros-noetic-xgc2-ros-display`
-`0.1.0-1~focal`; product version is `0.1.0-1`. One native package contains all
-four relay types, the shared library, node, headers and catkin exports. Native
-system-library requirements are derived with dpkg-shlibdeps. Noetic roscpp
-explicitly supplies the unversioned ROS runtime DSOs; generated message packages
-are required by the exported SDK. There are no internal XGC2 APT dependencies.
+The first Noetic/Focal APT identity was `ros-noetic-xgc2-ros-display`
+`0.1.0-1~focal`. The current package is `ros-noetic-xgc2-ros-visualizer`
+`0.2.0-1~focal`. One native package contains the relay library and node, the
+visualization publisher, and their headers. Native system-library requirements
+are derived with dpkg-shlibdeps. The package depends on
+`ros-noetic-xgc2-robot-visualization`.
 
 Push and PR CI on main use native amd64/arm64 GitHub-hosted runners and the
 existing controlled Noetic 1.0.0 image, locked by multiarch digest above (amd64
