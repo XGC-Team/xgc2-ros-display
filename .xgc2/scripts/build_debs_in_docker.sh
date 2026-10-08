@@ -45,7 +45,6 @@ if [[ "$XGC2_RUN_SOURCE_TESTS" == 1 ]]; then
   cmake --build /work/build --target run_tests -j1
   catkin_test_results /work/build/test_results
 fi
-python3 /source/test/node_arguments_test.py /work/build/devel/lib/xgc2_ros_display_relays/xgc2_display_relays
 DESTDIR=/work/install cmake --install /work/build
 /source/.xgc2/scripts/package_debs.sh --install-root /work/install --output-dir /out
 '

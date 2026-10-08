@@ -1,117 +1,171 @@
-# ROS1 visualization
+# ROS1 visualizer
 
-This ROS1 C++ product is `xgc2-ros-visualizer`. It owns subscriber-gated display
-topic copies and the publisher that turns interface data into one visualization
-interface. The catkin package stays `xgc2_ros_display_relays` so the relay
-install paths stay. The publisher node installs as
-`lib/xgc2_ros_visualizer/xgc2_ros_visualizer_node`. Source repository:
-[XGC-Team/xgc2-ros-visualizer](https://github.com/XGC-Team/xgc2-ros-visualizer).
-Gazebo shadow rendering is not in this package. The relay library does no
-algorithm conversion. Core consumer migration is separate work; this repository
-does not retain an alternate Python relay.
+`xgc2-ros-visualizer` provides one C++ ROS server, one executable
+`xgc2_ros_visualizer_node`, and the canonical catkin package
+`xgc2_ros_visualizer`. A server owns a fixed input pool (default 2, maximum 32
+workers), one publication scheduler, and a bounded Unix HTTP control loop.
+Robots, descriptions and relays are instance data. Adding robots does not create
+application threads, helper processes or `robot_state_publisher` children.
+Core uses its ordinary supervised process definition and a frozen startup file;
+normal Stop terminates that Run's server and removes its bootstrap file.
 
-Authority: `xgc2/process-catalog/current/platform/lichtblick-display-relays.json`.
-Reviewed authority SHA-256: `0f955708788b410fc3f3f0cd97df83ac07ff4daf32e434dff84abe31ddf69e16`.
-`parseRelaySpecs` accepts its exact four fields and four declared message types:
-PointCloud2, OccupancyGrid, Path and PoseArray. Source names must be absolute,
-unique and outside `/xgc/display`; outputs are exactly `/xgc/display` + source.
-Maximum 64 relays; each copy budget is finite 0.1–100 Hz. Both ROS queues are 1;
-no latching, periodic republishing, retained samples or field conversion.
-Embedding ROS remaps which alter a configured source or copy are rejected.
+The separate `xgc2_robot_visualization` dependency supplies FS150, Scout and
+Mecanum geometry, wheel/rotor animation calculations, frame names and path
+styles. This server owns ROS subscriptions, publication, scheduling, URDF
+parameters and required fixed/joint TF. Gazebo shadow rendering, algorithm
+planning, map production and Viewer rendering remain their owning products.
 
-DeclaredWire<T> copies the upstream serialized payload once on receipt and
-publishes that same immutable ROS shared_ptr. Its type/MD5/definition come from
-the declared generated ROS type, so advertising never needs an upstream sample.
-HasHeader is false to stop roscpp from rewriting header.seq; source seq, stamp,
-frame, float bits and payload bytes remain unchanged. Source topics and their
-recorders have no display budget applied. Steady time controls only the copy.
+## Startup and RPC
 
-The library creates its own callback queue and one callback thread; it never
-initializes or globally shuts down ROS. Publisher status and receipt callbacks
-run serially. Connect subscribes only when actual display peers exist; the last
-disconnect releases the upstream subscription. Subscription generations fence
-old callbacks across reconnect. Stop is idempotent: prohibit publication, stop
-the callback queue, join its worker, release subscriptions and advertisements.
-After stop returns no callback can publish. Already handed-off ROS transport
-bytes may arrive later at a display consumer. Embedding owners must call stop
-from outside this private callback thread and keep their ROS context alive until
-it returns. Callback failures are reported by rethrowFailure for owner teardown.
+Source a ROS Noetic environment and select its master/IP normally. Required
+private parameters are `socket_path` (an absent absolute Unix socket path) and
+`server_instance_id`. Optional parameters are `callback_workers` (1–32),
+`rates_json` (an object overlaying defaults), `world_clock` (`wall` or
+`simulation`, default `wall`) and `initial_instance_file`. The clock is immutable
+and selected before ROS initialization; an existing `/use_sim_time` remap is
+preserved. Do not separately pass `_use_sim_time`.
 
-`xgc2_display_relays RELAYS_JSON` is the thin process entry. Missing or extra
-arguments fail before ROS initialization. ROS environment variables continue to
-select the master/IP. Empty lists wait for
-SIGTERM/SIGINT without initializing ROS or contacting a master. Nonempty owners
-stop and shut down their own process ROS context on those signals. No worker
-child exists to orphan. Process supervision retains its existing grace timeout.
+```sh
+rosrun xgc2_ros_visualizer xgc2_ros_visualizer_node \
+  _socket_path:=/tmp/visualizer.sock _server_instance_id:=my-run \
+  _world_clock:=simulation _initial_instance_file:=/private/input.json
+curl --unix-socket /tmp/visualizer.sock http://localhost/v1/status
+```
 
-Build and install with a sourced ROS Noetic environment:
+The socket is mode 0600. It is never adopted or replaced if already present.
+Control requests have fixed client/header/body limits and finite deadlines.
+
+| Request | Behavior |
+| --- | --- |
+| `GET /health` | Server identity, readiness and fixed callback-worker count |
+| `GET /v1/status` | Membership, resource counts, rates and publication counters |
+| `GET /v1/instances/<id>` | Observe an existing instance; 404 never creates one |
+| `PUT /v1/instances/<id>` | Validate and create complete membership; identical retry is a no-op, different content is 409 |
+| `DELETE /v1/instances/<id>` | Idempotently remove only that instance; wait for its publication fence |
+| `GET /v1/rates` | Return the current complete table in `rates` |
+| `PUT /v1/rates` | Atomically replace the complete validated table; invalid candidates leave it unchanged |
+
+A native instance request contains exactly `robots`, `descriptions`,
+`worldBoundary`, `settings` and `displayRelays`. The first two are the existing
+robot visualization/description roster arrays. Settings use the existing
+snake-case field names; unknown fields and legacy individual publish-rate
+settings are rejected. Empty rosters are valid. Configured scene instances,
+including zero-robot worlds, publish `/xgc/robot_scene/ready`; this acknowledges
+configuration, not fresh robot poses or scientific progress. Descriptions also
+publish `/xgc/robot_descriptions/ready`.
+
+The optional startup file contains exactly:
+
+```json
+{"instanceId":"existing-run-id","robots":[],"context":{"runMode":"simulation","worldClock":"simulation","worldBoundary":null},"settings":{},"displayRelays":[]}
+```
+
+`robots` is the complete frozen public Robot array, `context` the complete
+session context, and `settings` the entry's full camel-case panel settings.
+The server projects these values and creates the instance through the same
+validated registry path as RPC. Namespace, scene model and installed description
+metadata come from each Robot's visualization configuration. FS150 AR uses only
+`localizationSources[context.runMode].poseTopic` and its frozen offset. Missing
+selected sources fail startup; no VRPN/profile/topic guessing or second offset
+application occurs. Numeric slot palette ordering and the original Scout mocap
+scene-model binding are preserved. Unrelated panel fields remain Viewer-owned.
+A startup file must be a nonempty regular file of at most 1 MiB; symlinks are
+rejected.
+
+Instances cannot share the existing global scene/frame outputs on the same ROS
+graph. Independent relay-only instances can disable scene/transforms and use
+disjoint display topics. Conflicts, duplicate models and duplicate path outputs
+fail before membership becomes visible. DELETE never publishes SceneDeletion
+ALL or purges all ROS description parameters. A replaced foreign parameter value
+is preserved during cleanup.
+
+## Data and publication rates
+
+All subscriptions remain active until their instance is deleted or the server
+stops, regardless of Viewer connections. ROS input queues are size 1. Callbacks
+update fixed latest state and fixed source-time history under short locks;
+serialization, publication, URDF parsing and network I/O occur outside those
+locks. Membership and complete rate tables are immutable publication snapshots.
+Rate changes and Stop wake the single scheduler immediately, including when all
+rates are 0.1 Hz.
+
+| Kind/channel | Default ceiling | Output |
+| --- | ---: | --- |
+| FS150/Scout/Mecanum `pose_tf` | 120 Hz | `/xgc/tf` body/label/camera and AR anchor transforms, new source stamps only |
+| Each kind `joint_tf`, `markers` | 30 Hz | `/xgc/tf` visual rotor/wheel TF; optional `/markers` geometry/path/labels |
+| Each kind `scene`, `scene_path`, `path`, `ar_path`, `ar_identity` | 10 Hz | `/xgc/scene` labels/optional paths, namespace Path topics, `/xgc/scene_ar` |
+| FS150 `height_projection`, `height_projection_ar` | 10 Hz | `/xgc/uav_height_projection` and `/xgc/uav_height_projection_ar` |
+| Global `tf_root` | 30 Hz | Standard `/tf` world root |
+| Global `tf_static`, `world_boundary`, `readiness` | 1 Hz | Latched fixed aliases/URDF TF, world boundary layers and ready events |
+| Global `joint_tf` | 30 Hz | In-process URDF joint TF for descriptions without a matching concrete scene kind |
+| All kinds `display_pointcloud`, `display_grid`, `display_path`, `display_pose_array` | 10 Hz | Original serialized data under `/xgc/display` |
+
+All applicable ceilings accept finite 0.1–1000 Hz numbers. Static, readiness and
+label outputs are event-driven with ceilings, rather than periodic replay.
+Description joint TF uses the matching robot kind's `joint_tf` ceiling when
+available; global `joint_tf` does not override the three concrete kinds.
+World boundary topics remain `/xgc/world_boundary`, `/xgc/world_boundary/ar`,
+`/xgc/world_boundary_walls` and `/xgc/world_boundary_walls/ar`.
+
+3D FS150 reads its fused `/<namespace>/mavros/local_position/pose`; ground robots
+read canonical `/<namespace>/pose`. AR reads the exact frozen source with its
+world offset once. Source stamps, finite/frame/freshness checks, the Scout body
+height, ground-path z=0, raw AR quaternion and the off/ground/walls semantics are
+preserved. Rotor state reads MAVROS state/extended-state; ground wheel animation
+reads canonical twist, with cmd_vel as the existing fallback. The server never
+writes those scientific inputs or controller parameters.
+
+Nav Path, Marker path and Scene path use the same source-stamp sampled 6-second,
+10-Hz, maximum-61-point ring. Lowering an output ceiling does not lower history
+sampling, including with accelerated simulation time. History expires using ROS
+time and respects rollback/reset semantics. URDF XML is loaded from installed
+package-relative files. Parameters and fixed/movable joint transforms are
+produced in-process using the original description prefix; no RSP is forked.
+
+A relay request is `{source,topic,messageType,robotKind}`. Source names are unique
+canonical absolute names outside `/xgc/display`; output is exactly
+`/xgc/display` + source. Maximum 64 per instance. Only PointCloud2,
+OccupancyGrid, Path and PoseArray full-state messages are accepted. The relay
+receives serialized bytes once and publishes the same immutable pointer using
+the original type/MD5/definition. It does not decode, rewrite Header sequence,
+convert fields, replay previously published samples or budget the source itself.
+Legacy bootstrap `maxRateHz` is replaced by the kind/channel table.
+
+Membership, queues, latest-message retention and history point counts are
+bounded. Variable ROS payload bytes and ROS serialization/transport allocations
+remain message-dependent; this is not a claim of zero allocations or a universal
+byte-memory limit.
+
+## Build, package and validation
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/path/to/prefix
-cmake --build build -j1
-cmake --build build --target tests -j1
-cmake --build build --target run_tests -j1
+cmake --build build -j2
+cmake --build build --target tests -j2
+cmake --build build --target run_tests -j2
 catkin_test_results build/test_results
 cmake --install build
 ```
 
-The installed library is `lib/libxgc2_ros_display_relays.so`; public headers are
-under `include/xgc2_ros_display_relays`; the node is
-`lib/xgc2_ros_display_relays/xgc2_display_relays`. Source the installed
-`setup.bash` when using a nonstandard prefix. Embedding consumers use
-`find_package(catkin REQUIRED COMPONENTS xgc2_ros_display_relays)` and link the
-exported catkin libraries. The embedding owner must keep its NodeHandle alive.
+The native package is `ros-noetic-xgc2-ros-visualizer`, version 0.3.0-1. It installs
+one executable, the runtime/contract libraries and public canonical headers.
+Consumers use `find_package(catkin REQUIRED COMPONENTS xgc2_ros_visualizer)`.
+The installed Robot SDK ABI dependency is at least 0.2.0-16.
 
-On 2026-10-03, Release build, install and tests passed on amd64 with GCC 9.4,
-catkin 0.8.12 and jsoncpp 1.7.4 in the existing Noetic CI image pinned to
-`sha256:2d0ab240a669e59dc6e86e41806041a7f5d46751c787b5cbb225b10e1faed39b`.
-Validation ran as UID/GID 1000 with one CPU, no external network, no exposed
-ports and no formal runtime ownership labels. Three contract tests and two ROS
-lifecycle tests passed (catkin's combined wrapper/result count: 11, zero
-failures). They cover schema rejection, wire/type/MD5 identity, steady-time
-budget/no catchup/reconnect reset, and all four types' laziness, disconnect,
-reconnect, original subscriber survival and concurrent Stop cleanup.
+`.xgc2/scripts/build_debs_in_docker.sh` uses the pinned Noetic build image and
+installs published SDK dependencies only inside independent containers. It runs
+source tests, produces the Deb, then installs that Deb in a second container and
+checks the catkin exports, linkage and actual executable. This build requires
+network access to production APT for dependencies; it never uses an active Core
+container as its builder.
 
-A separate consumer compiled, linked and ran using only the installed catkin
-export. The actual installed standalone node was also exercised across process
-boundaries against a private ROS master: all four types advertised before any
-source sample; no viewer meant zero source connections; each original recorder
-received 80 serialized packets while its display copy received 5. Every copy's
-entire serialized payload matched an original packet. The last viewer disconnect
-released the relay connection, reconnect restored it, and SIGTERM returned zero
-with no relay connection left while original recorders still received data.
-An empty-list installed process opened no network socket and stopped cleanly.
-These are correctness and lifecycle checks; no performance improvement or
-formal viewer/Experiment/APT acceptance is claimed. Arm64 remains unverified.
-
-ROS API reference: [AdvertiseOptions](https://github.com/ros/ros_comm/blob/noetic-devel/clients/roscpp/include/ros/advertise_options.h)
-documents serialized header sequence rewriting; [serialization](https://github.com/ros/roscpp_core/blob/noetic-devel/roscpp_serialization/include/ros/serialization.h)
-provides the bounded streams used by the raw payload serializer.
-
-The Noetic/Focal package is `ros-noetic-xgc2-ros-visualizer`.
-One native package contains the relay library and node, the
-visualization publisher, and their headers. Native system-library requirements
-are derived with dpkg-shlibdeps. The package depends on
-`ros-noetic-xgc2-robot-visualization`.
-
-Push and PR CI on main use native amd64/arm64 GitHub-hosted runners and the
-existing controlled Noetic 1.0.0 image, locked by multiarch digest above (amd64
-`b3e2b84d857d69c98aa37f4509890cd3d4c23c084c7b28fe7de84a8532b8b667`, arm64
-`2d28bb572abb63825dddbffa2b1ad9198e4b0b472aedd021783f906e99c72d78`). Source
-binds are read-only; writable build/output binds use the calling UID/GID. Build,
-source tests, new argv rejection controls and installation run within private
-containers. Build and installation obtain the robot visualization dependency
-from production APT. Installed-Deb gates check the native DSO
-and executable, compile/link an independent SDK consumer, and exercise the
-actual node across processes with all four serialized payloads and Stop. CI
-retains only Debs and strict `xgc2.build-artifact.v1` manifests for 14 days.
-
-```sh
-.xgc2/scripts/build_debs_in_docker.sh --work-dir /tmp/ros-visualizer-build --output-dir "$PWD/debs"
-```
-
-`release.yml` accepts only the existing central prepare/compatibility contract;
-it has no production publishing credentials or index writer. Ordinary releases
-reuse exact-source push CI artifacts through the central xgc2-devops release
-orchestrator. CI/package preparation does not assert production APT visibility,
-Core consumer migration, or formal viewer/Experiment acceptance.
+`test/installed_node_probe.py` creates a finite private ROS graph. Its gate covers
+zero-robot startup readiness and clock remapping, no-peer persistent subscriptions,
+four-type exact-byte relays, RPC atomic validation/retries/deletion, foreign
+instance/parameter preservation, 20/100 robot resource counts, source-time paths
+at accelerated clock/low publication rates, in-process URDF joint TF and bounded
+low-rate SIGTERM. Transport tests separately exercise real Unix HTTP framing,
+client limits, deadlines and foreign-inode socket cleanup. Private probes are
+correctness/resource checks, not formal station, browser or scientific-mission
+acceptance. Source CI and Deb preparation do not imply production APT visibility
+or live station adoption; the central release workflow owns publication.

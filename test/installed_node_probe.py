@@ -1,151 +1,416 @@
-import io
+#!/usr/bin/env python3
+"""Finite, private ROS graph acceptance for the actual single server executable.
+Run only in an independent build/install container. Never uses a station master.
+"""
+import collections
+import copy
+import hashlib
+import http.client
 import json
-import math
 import os
-import pathlib
+import signal
 import socket
 import subprocess
 import sys
-import threading
+import tempfile
 import time
+import urllib.parse
+import xml.etree.ElementTree as ET
 import xmlrpc.client
 
-binary = sys.argv[1]
-socket.setdefaulttimeout(2)
-result = {"installedExecutable": binary}
-environment = dict(os.environ, ROS_MASTER_URI="http://127.0.0.1:11317", ROS_IP="127.0.0.1")
 
-def require(condition, message):
-    if not condition:
+class UnixHTTP(http.client.HTTPConnection):
+    def __init__(self, path):
+        super().__init__("localhost", timeout=3)
+        self.path = path
+
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect(self.path)
+
+
+def require(value, message):
+    if not value:
         raise AssertionError(message)
 
-def until(predicate, timeout=6):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            if predicate():
-                return True
-        except (OSError, xmlrpc.client.Error):
-            pass
-        time.sleep(0.02)
-    return False
 
-empty = subprocess.Popen([binary, "[]"], env=dict(environment, ROS_MASTER_URI="http://127.0.0.1:1"),
-                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-try:
-    time.sleep(0.2)
-    require(empty.poll() is None, "empty relay owner exited before Stop")
-    sockets = [os.readlink(fd) for fd in pathlib.Path("/proc/{}/fd".format(empty.pid)).iterdir()]
-    require(not any(target.startswith("socket:") for target in sockets), "empty owner opened a network socket")
-    empty.terminate()
-    require(empty.wait(timeout=3) == 0, "empty owner failed Stop")
-    result["emptyNoROSNoSocketStop"] = True
-finally:
-    if empty.poll() is None:
-        empty.kill()
-        empty.wait()
+def wait(predicate, message, seconds=6):
+    until = time.monotonic() + seconds
+    while time.monotonic() < until:
+        if predicate():
+            return
+        time.sleep(.02)
+    raise AssertionError(message)
 
-master_log = open("/tmp/xgc-ros-display-validation-master.log", "w")
-master = subprocess.Popen(["roscore", "-p", "11317"], env=environment, stdout=master_log, stderr=subprocess.STDOUT)
-node = None
-try:
-    proxy = xmlrpc.client.ServerProxy(environment["ROS_MASTER_URI"])
-    require(until(lambda: proxy.getSystemState("/display_install_probe")[0] == 1), "private ROS master unavailable")
-    os.environ.update(environment)
-    import rospy
-    from sensor_msgs.msg import PointCloud2
-    from nav_msgs.msg import OccupancyGrid, Path
-    from geometry_msgs.msg import PoseArray
-    rospy.init_node("display_install_probe", disable_signals=True)
-    types = {"sensor_msgs/PointCloud2": PointCloud2, "nav_msgs/OccupancyGrid": OccupancyGrid,
-             "nav_msgs/Path": Path, "geometry_msgs/PoseArray": PoseArray}
-    specs = [{"source": "/installed_probe_" + str(index), "topic": "/xgc/display/installed_probe_" + str(index),
-              "messageType": name, "maxRateHz": 5} for index, name in enumerate(types)]
-    publishers = [rospy.Publisher(spec["source"], types[spec["messageType"]], queue_size=1) for spec in specs]
-    node = subprocess.Popen([binary, json.dumps(specs)], env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    require(until(lambda: all(spec["topic"] in dict(proxy.getTopicTypes("/display_install_probe")[2]) for spec in specs)), "copies were not declared before source messages")
-    require(all(pub.get_num_connections() == 0 for pub in publishers), "declaration subscribed an unwatched source")
-    originals = [set() for _ in specs]
-    copies = [[] for _ in specs]
-    lock = threading.Lock()
-    def original(index):
-        def receive(message):
-            with lock:
-                originals[index].add(bytes(message._buff))
-        return receive
-    def copied(index):
-        def receive(message):
-            with lock:
-                copies[index].append(bytes(message._buff))
-        return receive
-    watchers = [rospy.Subscriber(spec["topic"], rospy.AnyMsg, copied(index), queue_size=1) for index, spec in enumerate(specs)]
-    require(until(lambda: all(pub.get_num_connections() == 1 for pub in publishers)), "display viewer did not subscribe sources")
-    recorders = [rospy.Subscriber(spec["source"], rospy.AnyMsg, original(index), queue_size=1) for index, spec in enumerate(specs)]
-    require(until(lambda: all(pub.get_num_connections() == 2 for pub in publishers)), "independent source recorders unavailable")
-    messages = []
-    for spec in specs:
-        message = types[spec["messageType"]]()
-        message.header.stamp = rospy.Time(123, 456)
-        message.header.frame_id = "installed_original_frame"
-        if spec["messageType"] == "sensor_msgs/PointCloud2":
-            message.height, message.width, message.point_step, message.row_step = 1, 2, 4, 8
-            message.data = bytes([0, 255, 127, 128, 1, 2, 3, 4])
-        elif spec["messageType"] == "nav_msgs/OccupancyGrid":
-            message.info.height, message.info.width, message.info.resolution = 1, 3, 0.05
-            message.data = [-1, 0, 100]
-        messages.append(message)
-    started = time.monotonic()
-    for _ in range(80):
-        for pub, message in zip(publishers, messages):
-            pub.publish(message)
-        time.sleep(0.01)
-    elapsed = time.monotonic() - started
-    require(until(lambda: all(copies)), "one declared type forwarded no data")
-    time.sleep(0.1)
-    counts = []
-    with lock:
-        for spec, source_packets, forwarded in zip(specs, originals, copies):
-            require(all(packet in source_packets for packet in forwarded), "serialized source bytes changed: " + spec["messageType"])
-            require(len(forwarded) <= math.ceil(elapsed * 5) + 1, "copy budget exceeded")
-            require(len(source_packets) > len(forwarded), "source recording was display limited")
-            counts.append({"messageType": spec["messageType"], "sourcePackets": len(source_packets), "copyPackets": len(forwarded)})
-    for watcher in watchers:
-        watcher.unregister()
-    require(until(lambda: all(pub.get_num_connections() == 1 for pub in publishers)), "last display disconnect retained upstream")
-    watchers = [rospy.Subscriber(spec["topic"], rospy.AnyMsg, copied(index), queue_size=1) for index, spec in enumerate(specs)]
-    require(until(lambda: all(pub.get_num_connections() == 2 for pub in publishers)), "reconnect failed to resubscribe sources")
-    node.terminate()
-    stdout, stderr = node.communicate(timeout=5)
-    require(node.returncode == 0, "installed node Stop failed: " + stderr.decode())
-    require(until(lambda: all(pub.get_num_connections() == 1 for pub in publishers)), "Stop left relay source connections")
-    with lock:
-        before = [len(items) for items in originals]
-        copied_before = [len(items) for items in copies]
-    for pub, message in zip(publishers, messages):
-        pub.publish(message)
-    require(until(lambda: all(len(items) > previous for items, previous in zip(originals, before))), "Stop disrupted original recorders")
-    time.sleep(0.1)
-    with lock:
-        require([len(items) for items in copies] == copied_before, "copy continued after Stop")
-    result.update({"declaredBeforeSource": True, "noViewerNoSource": True,
-                   "fourTypesRawBytesAndCopiesOnlyRate": counts, "disconnectReconnectStop": True,
-                   "sourceRecorderSurvivesStop": True})
-    pathlib.Path("/tmp/xgc-ros-display-installed-receipt.json").write_text(json.dumps(result, indent=2) + "\n")
-    print(json.dumps(result, indent=2))
-finally:
-    if node is not None and node.poll() is None:
-        node.terminate()
+
+def resources(pid):
+    values = {}
+    with open('/proc/%d/status' % pid) as stream:
+        for line in stream:
+            if line.startswith(('VmRSS:', 'Threads:')):
+                key, value = line.split(':', 1)
+                values[key] = int(value.split()[0])
+    children = []
+    for tid in os.listdir('/proc/%d/task' % pid):
+        with open('/proc/%d/task/%s/children' % (pid, tid)) as stream:
+            children.extend(stream.read().split())
+    values['children'] = children
+    require(not children, 'server forked a child process')
+    return values
+
+
+def robot(name, ar=False):
+    result = dict(name=name, namespace='/' + name, descriptionPackage='fs150_description',
+                  descriptionFile='urdf/fs150_visual.urdf', robotStatePublisher=False,
+                  jointStateTopic='joint_states', sceneModel=name, odometryTopic='',
+                  pathTopic='path', worldOffset=[1, 2, 3] if ar else [0, 0, 0])
+    if ar:
+        result.update(arPoseTopic='/raw/' + name, arPathTopic='ar_path',
+                      heightProjectionColor='#f2003c')
+    return result
+
+
+def instance(count=0, relays=None, scene=True):
+    rows = [robot('uav%d' % (i + 1), i == 0) for i in range(count)]
+    settings = dict(frame_id='world', use_sim_time=True, publish_transforms=scene,
+                    publish_scene_update=scene, publish_markers=scene,
+                    publish_scene_paths=scene, publish_paths=scene,
+                    tracked_fs150_models=','.join(row['name'] for row in rows))
+    return dict(robots=rows, descriptions=[], worldBoundary=None,
+                settings=settings, displayRelays=relays or [])
+
+
+def main(binary):
+    with tempfile.TemporaryDirectory(prefix='xgc2-single-server-probe-') as work:
+        probe_socket = os.path.join(work, 'control.sock')
+        reserve = socket.socket()
+        reserve.bind(('127.0.0.1', 0))
+        port = reserve.getsockname()[1]
+        reserve.close()
+        master_uri = 'http://127.0.0.1:%d' % port
+        os.environ.update(ROS_MASTER_URI=master_uri, ROS_IP='127.0.0.1', ROS_HOME=work,
+                          ROS_LOG_DIR=os.path.join(work, 'roslog'))
+        os.environ.pop('ROS_HOSTNAME', None)
+        logfile = open(os.path.join(work, 'process.log'), 'w')
+        processes = []
         try:
-            node.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            node.kill()
-            node.wait()
-    if "rospy" in globals():
-        rospy.signal_shutdown("installed probe complete")
-    master.terminate()
-    try:
-        master.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        master.kill()
-        master.wait()
-    master_log.close()
+            master = subprocess.Popen(['roscore', '-p', str(port)], stdout=logfile,
+                                      stderr=logfile, start_new_session=True)
+            processes.append(master)
+            def master_ready():
+                try:
+                    return xmlrpc.client.ServerProxy(master_uri).getPid('/private_probe')[0] == 1
+                except (OSError, xmlrpc.client.Error):
+                    return False
+            wait(master_ready, 'private ROS master failed')
+            import rospy
+            from rosgraph_msgs.msg import Clock
+            from geometry_msgs.msg import Pose, PoseStamped, PoseArray
+            from nav_msgs.msg import OccupancyGrid, Path
+            from sensor_msgs.msg import PointCloud2, JointState
+            from std_msgs.msg import Empty, Header
+            from tf2_msgs.msg import TFMessage
+            from visualization_msgs.msg import MarkerArray, Marker
+            from foxglove_msgs.msg import SceneUpdate
+            rospy.init_node('visualizer_private_probe', anonymous=True, disable_signals=True)
+            clock_pub = rospy.Publisher('/clock', Clock, queue_size=1)
+            # The private Python source exposes 100 topics through one TCPROS
+            # listener (rospy defaults to backlog 5). Size this test fixture for
+            # the simultaneous connection burst; production server is untouched.
+            from rospy.impl import tcpros_base
+            private_source = tcpros_base.init_tcpros_server()
+            private_source.start_server()
+            private_source.tcp_ros_server.server_sock.listen(256)
+            def rpc(method, path, body=None, expected=200):
+                client = UnixHTTP(probe_socket)
+                try:
+                    client.request(method, path, None if body is None else json.dumps(body),
+                                   {'Content-Type': 'application/json'})
+                    response = client.getresponse()
+                    status = response.status
+                    result = json.loads(response.read(1024 * 1024 + 1))
+                finally:
+                    client.close()
+                require(status == expected, '%s %s: %s %s' % (method, path, status, result))
+                return result
+            initial = os.path.join(work, 'input.json')
+            with open(initial, 'w') as stream:
+                json.dump(dict(instanceId='initial-zero', robots=[], context=dict(
+                    runMode='simulation', worldClock='simulation', worldBoundary=None),
+                    settings={}, displayRelays=[]), stream)
+            server = subprocess.Popen([binary, '_socket_path:=' + probe_socket,
+                '_server_instance_id:=private-server', '_callback_workers:=2',
+                '_world_clock:=simulation', '_initial_instance_file:=' + initial,
+                '/use_sim_time:=/xgc2_ros_visualizer/use_sim_time'],
+                stdout=logfile, stderr=logfile, start_new_session=True)
+            processes.append(server)
+            wait(lambda: os.path.exists(probe_socket) or server.poll() is not None,
+                 'server socket absent')
+            require(server.poll() is None, 'server exited during bootstrap')
+            require(rpc('GET', '/health')['callbackWorkers'] == 2, 'wrong input pool size')
+            require(rpc('GET', '/v1/instances/initial-zero')['ready'], 'zero bootstrap not ready')
+            ready = []
+            ready_sub = rospy.Subscriber('/xgc/robot_scene/ready', Empty, lambda _: ready.append(True), queue_size=1)
+            sim_time = 100.0
+            def stamp():
+                return rospy.Time.from_sec(sim_time)
+            def pump(seconds, publishers=(), ar_publisher=None, joint_publisher=None, frame='map'):
+                nonlocal sim_time
+                until = time.monotonic() + seconds
+                previous = time.monotonic()
+                while time.monotonic() < until:
+                    current = time.monotonic()
+                    sim_time += 3 * (current - previous)
+                    previous = current  # Actual RTF=3 even when publishing 100 slots costs CPU.
+                    clock_pub.publish(Clock(clock=stamp()))
+                    for index, publisher in enumerate(publishers):
+                        msg = PoseStamped(); msg.header.stamp = stamp(); msg.header.frame_id = frame
+                        msg.pose.position.x = sim_time / 10 + index; msg.pose.position.z = 1
+                        msg.pose.orientation.w = 1; publisher.publish(msg)
+                    if ar_publisher:
+                        msg = PoseStamped(); msg.header.stamp = stamp(); msg.header.frame_id = 'frozen'
+                        msg.pose.position.x = 1; msg.pose.position.y = 2; msg.pose.position.z = .5
+                        msg.pose.orientation.w = 2; ar_publisher.publish(msg)
+                    if joint_publisher:
+                        joint_publisher[0].publish(JointState(header=Header(stamp=stamp()),
+                            name=joint_publisher[1], position=[.5] * len(joint_publisher[1])))
+                    time.sleep(.02)
+            pump(.15)
+            wait(lambda: bool(ready), 'zero-robot bootstrap readiness missing')
+            require(rospy.get_param('/xgc2_ros_visualizer/use_sim_time'), 'catalog clock remap not honored')
+            rpc('DELETE', '/v1/instances/initial-zero')
+            rpc('GET', '/v1/instances/initial-zero', expected=404)
+            baseline = resources(server.pid)
+            default_rates = rpc('GET', '/v1/rates')['rates']
+            bad = copy.deepcopy(default_rates); bad['fs150']['path'] = 0
+            rpc('PUT', '/v1/rates', bad, 400)
+            require(rpc('GET', '/v1/rates')['rates'] == default_rates, 'bad rate changed configuration')
+
+            # Four full-state types: subscribe without peers, forward original bytes,
+            # no replay, and stay subscribed after the display peers leave.
+            types = [PointCloud2, OccupancyGrid, Path, PoseArray]
+            type_names = ['sensor_msgs/PointCloud2', 'nav_msgs/OccupancyGrid', 'nav_msgs/Path', 'geometry_msgs/PoseArray']
+            sources = ['/probe/cloud', '/probe/grid', '/probe/path', '/probe/poses']
+            relay_specs = [dict(source=s, topic='/xgc/display' + s, messageType=t, robotKind='global') for s, t in zip(sources, type_names)]
+            source_pubs = [rospy.Publisher(s, t, queue_size=1) for s, t in zip(sources, types)]
+            original = [collections.deque(maxlen=256) for _ in types]
+            displayed = [collections.deque(maxlen=256) for _ in types]
+            original_subs = [rospy.Subscriber(s, rospy.AnyMsg, lambda m, i=i: original[i].append(bytes(m._buff)), queue_size=100) for i, s in enumerate(sources)]
+            foreign = instance(relays=relay_specs, scene=False)
+            rpc('PUT', '/v1/instances/foreign-relay', foreign)
+            wait(lambda: all(p.get_num_connections() >= 2 for p in source_pubs), 'relay did not subscribe before a viewer')
+            rospy.set_param('/foreign/visual_robot_description', 'foreign-owned')
+            def packets(count):
+                for n in range(count):
+                    for i, publisher in enumerate(source_pubs):
+                        msg = types[i](); msg.header.seq = n + 31; msg.header.stamp = stamp(); msg.header.frame_id = 'original'
+                        if i == 0:
+                            msg.width = 256; msg.height = 1; msg.point_step = 4; msg.row_step = 1024; msg.data = bytes([n % 256]) * 1024
+                        elif i == 1:
+                            msg.info.width = 2; msg.info.height = 1; msg.info.resolution = .125; msg.data = [-1, n % 100]
+                        elif i == 2:
+                            for x in (n * .01, n * .01 + 1):
+                                sample = PoseStamped();sample.header = copy.deepcopy(msg.header)
+                                sample.pose.position.x = x;sample.pose.orientation.w = 1;msg.poses.append(sample)
+                        else:
+                            for x in (n * .01, n * .01 + 1):
+                                sample = Pose();sample.position.x = x;sample.orientation.w = 1;msg.poses.append(sample)
+                        publisher.publish(msg)
+                    time.sleep(.01)
+            packets(20); time.sleep(.25)
+            peers = [rospy.Subscriber('/xgc/display' + s, rospy.AnyMsg, lambda m, i=i: displayed[i].append(bytes(m._buff)), queue_size=100) for i, s in enumerate(sources)]
+            wait(lambda: all(peer.get_num_connections() for peer in peers), 'display publishers missing')
+            time.sleep(.15)
+            require(not any(displayed), 'relay replayed an already-published source sample')
+            rate_table = copy.deepcopy(default_rates)
+            for key in ['display_pointcloud', 'display_grid', 'display_path', 'display_pose_array']:
+                rate_table['global'][key] = 5
+            rpc('PUT', '/v1/rates', rate_table)
+            packets(80); time.sleep(.25)
+            for i in range(4):
+                require(len(original[i]) >= 40, 'original recorder was throttled')
+                require(1 <= len(displayed[i]) <= 8, 'relay ceiling/delivery failed')
+                require(all(sample in original[i] for sample in displayed[i]), 'relay changed raw serialized payload')
+            relay_counts = [len(samples) for samples in displayed]
+            for peer in peers:
+                peer.unregister()
+            wait(lambda: all(p.get_num_connections() >= 2 for p in source_pubs), 'disconnect removed source subscription')
+            changed = copy.deepcopy(foreign); changed['settings']['publish_paths'] = True
+            rpc('PUT', '/v1/instances/foreign-relay', changed, 409)
+            require(rpc('PUT', '/v1/instances/foreign-relay', foreign)['unchanged'], 'retry was not a no-op')
+            invalid = instance(1);invalid['robots'][0]['namespace'] = '/bad_slot'
+            rpc('PUT', '/v1/instances/invalid-label', invalid, 400)
+            rpc('GET', '/v1/instances/invalid-label', expected=404)
+            require(rpc('GET', '/v1/instances/foreign-relay')['ready'], 'invalid Scene request stopped foreign instance')
+            rpc('PUT', '/v1/rates', default_rates)
+
+            tf_messages = collections.deque(maxlen=20)
+            paths = collections.deque(maxlen=10)
+            ar_paths = collections.deque(maxlen=10)
+            markers = collections.deque(maxlen=10)
+            scenes = collections.deque(maxlen=10)
+            standard_tf = collections.deque(maxlen=20)
+            def observe(paths_enabled=True):
+                subscriptions = [rospy.Subscriber('/xgc/tf', TFMessage, tf_messages.append, queue_size=1),
+                    rospy.Subscriber('/markers', MarkerArray, markers.append, queue_size=1),
+                    rospy.Subscriber('/xgc/scene', SceneUpdate, scenes.append, queue_size=1),
+                    rospy.Subscriber('/tf', TFMessage, standard_tf.append, queue_size=1)]
+                if paths_enabled:
+                    subscriptions += [rospy.Subscriber('/uav1/path', Path, paths.append, queue_size=1),
+                        rospy.Subscriber('/uav1/ar_path', Path, ar_paths.append, queue_size=1)]
+                return subscriptions
+            observers = observe()
+            pose_pubs = [rospy.Publisher('/uav%d/mavros/local_position/pose' % (i + 1), PoseStamped, queue_size=1) for i in range(100)]
+            ar_pub = rospy.Publisher('/raw/uav1', PoseStamped, queue_size=1)
+            rpc('PUT', '/v1/instances/robots20', instance(20))
+            wait(lambda: all(p.get_num_connections() for p in pose_pubs[:20]), '20 robot inputs missing')
+            pump(.7, pose_pubs[:20], ar_pub)
+            wait(lambda: bool(paths) and bool(tf_messages), '20 representative pose/path delivery missing')
+            twenty = resources(server.pid)
+            require(rpc('GET', '/v1/status')['publisherWorkers'] == 1, 'publisher count changed')
+            started = time.monotonic();rpc('DELETE', '/v1/instances/robots20');delete20 = time.monotonic() - started
+            require(delete20 < 2, 'DELETE20 exceeded bounded completion')
+            require(rpc('GET', '/v1/instances/foreign-relay')['ready'], 'DELETE removed foreign instance')
+            require(rospy.get_param('/foreign/visual_robot_description') == 'foreign-owned', 'global URDF purge occurred')
+            for observer in observers:
+                observer.unregister()
+            retained_topics = set(sources + [spec['topic'] for spec in relay_specs] + ['/rosout', '/clock'])
+            def discovery_released():
+                _, _, state = xmlrpc.client.ServerProxy(master_uri).getSystemState('/private_probe')
+                return not any('/xgc2_ros_visualizer' in nodes and topic not in retained_topics
+                               for entries in state[:2] for topic, nodes in entries)
+            wait(discovery_released, 'deleted robot publications/subscriptions remained in master registry')
+            # Exercise the publication/DELETE fence repeatedly, using the real RPC.
+            for i in range(25):
+                rpc('PUT', '/v1/instances/delete-race', instance(1))
+                clock_pub.publish(Clock(clock=stamp()))
+                rpc('DELETE', '/v1/instances/delete-race')
+                # ROS master unregistration is asynchronous inside roscpp.
+                # Wait for discovery to settle before reusing the same namespace.
+                wait(discovery_released, 'deleted resources remained in private master registry')
+            hundred_request = instance(100)
+            description = robot('described');description['sceneModel'] = '';description['robotStatePublisher'] = True
+            description.update(descriptionPackage='scout_description', descriptionFile='urdf/scout_visual.urdf')
+            hundred_request['descriptions'] = [description]
+            low = {kind: {channel: .1 for channel in channels} for kind, channels in default_rates.items()}
+            rpc('PUT', '/v1/rates', low)
+            rpc('PUT', '/v1/instances/robots100', hundred_request)
+            wait(lambda: all(p.get_num_connections() for p in pose_pubs), '100 robot inputs missing')
+            observers = observe()
+            wait(lambda: all(observer.get_num_connections() for observer in observers), '100 robot outputs missing')
+            paths.clear();markers.clear();scenes.clear();ar_paths.clear()
+            pump(1.35, pose_pubs, ar_pub)
+            high = copy.deepcopy(default_rates);high['fs150'].update(path=20, ar_path=20, markers=20, scene_path=20)
+            rpc('PUT', '/v1/rates', high)
+            pump(.2, pose_pubs, ar_pub)
+            wait(lambda: any(20 <= len(p.poses) <= 61 for p in paths), 'source history was sampled by low publication cadence')
+            path_size = max(len(p.poses) for p in paths)
+            require(any(len(m.points) >= 20 for a in markers for m in a.markers if m.type == Marker.LINE_STRIP), 'Marker history lost low-rate source samples')
+            require(any(len(line.points) >= 20 for update in scenes for entity in update.entities for line in entity.lines), 'Scene history lost low-rate source samples')
+            require(any(p.poses and p.poses[-1].pose.orientation.w == 2 and abs(p.poses[-1].pose.position.z - 3.5) < 1e-9 for p in ar_paths), 'AR raw quaternion/offset-once changed')
+            hundred = resources(server.pid)
+            require(hundred['Threads'] <= twenty['Threads'] + 2, 'OS threads grew with robot count')
+            require(hundred['Threads'] <= baseline['Threads'] + 3, 'unexpected application thread growth')
+            require(hundred['VmRSS'] - twenty['VmRSS'] < 96 * 1024, 'representative membership memory growth excessive')
+            require(rpc('GET', '/v1/status')['callbackWorkers'] == 2, 'input pool grew with robot count')
+            xml = rospy.get_param('/described/robot_description')
+            names = [j.attrib['name'] for j in ET.fromstring(xml).findall('joint') if j.attrib.get('type') in ('continuous', 'revolute', 'prismatic')]
+            require(names, 'URDF fixture has no movable joints')
+            joints = rospy.Publisher('/described/joint_states', JointState, queue_size=1)
+            wait(lambda: joints.get_num_connections() > 0, 'in-process joint subscriber missing')
+            pump(.2, pose_pubs[:1], ar_pub, (joints, names))
+            require(any(t.child_frame_id.startswith('described/') for batch in standard_tf for t in batch.transforms), 'in-process URDF joint TF absent')
+            rospy.set_param('/described/visual_robot_description', 'foreign-replacement')
+            started = time.monotonic();rpc('DELETE', '/v1/instances/robots100');delete100 = time.monotonic() - started
+            require(delete100 < 2, 'DELETE100 exceeded bounded completion')
+            require(rospy.get_param('/described/visual_robot_description') == 'foreign-replacement', 'DELETE erased a replaced foreign parameter')
+            require(not rospy.has_param('/described/robot_description'), 'owned URDF parameter leaked')
+            rpc('DELETE', '/v1/instances/robots100')
+            wait(discovery_released, '100 robot discovery did not settle after DELETE')
+            for observer in observers:
+                observer.unregister()
+            path_only = instance(1);path_only['robots'] = [robot('uav101')]
+            path_only['settings'].update(tracked_fs150_models='uav101', publish_paths=False)
+            markers.clear();scenes.clear()
+            rpc('PUT', '/v1/instances/path-only', path_only)
+            observers = observe(paths_enabled=False)
+            independent = rospy.Publisher('/uav101/mavros/local_position/pose', PoseStamped, queue_size=1)
+            wait(lambda: independent.get_num_connections() > 0, 'independent Marker/Scene path input absent')
+            pump(.6, [independent])
+            wait(lambda: any(m.ns == 'uav101_actual_path' and len(m.points) >= 5
+                             for update in markers for m in update.markers), 'Marker path depended on nav Path enable')
+            require(any('uav101' in entity.id and len(line.points) >= 5
+                        for update in scenes for entity in update.entities for line in entity.lines),
+                    'Scene path depended on nav Path enable')
+            _, _, state = xmlrpc.client.ServerProxy(master_uri).getSystemState('/private_probe')
+            require(not any(topic == '/uav101/path' for topic, _ in state[0]), 'disabled nav Path was advertised')
+            rpc('DELETE', '/v1/instances/path-only')
+            wait(discovery_released, 'path-only discovery did not settle after DELETE')
+            disabled_ground = instance()
+            ground_row = robot('ugv102')
+            ground_row.update(descriptionPackage='scout_description', descriptionFile='urdf/scout_visual.urdf')
+            disabled_ground['robots'] = [ground_row]
+            disabled_ground['descriptions'] = [copy.deepcopy(ground_row)]
+            disabled_ground['settings'].update(tracked_scout_models='ugv102', track_ugv=False)
+            ground_source = rospy.Publisher('/ugv102/pose', PoseStamped, queue_size=1)
+            status = rpc('PUT', '/v1/instances/ground-disabled', disabled_ground)
+            require(status['robotCount'] == 0 and status['descriptionCount'] == 1,
+                    'track_ugv false did not separate ground scene from descriptions')
+            pump(.2, [ground_source], frame='world')
+            require(ground_source.get_num_connections() == 0, 'disabled ground scene subscribed to scientific pose')
+            require(rospy.has_param('/ugv102/visual_robot_description'), 'ground flag disabled independent description')
+            _, _, state = xmlrpc.client.ServerProxy(master_uri).getSystemState('/private_probe')
+            require(not any(topic == '/ugv102/path' for topic, _ in state[0]), 'disabled ground scene advertised path')
+            rpc('DELETE', '/v1/instances/ground-disabled')
+            require(not rospy.has_param('/ugv102/visual_robot_description'), 'independent ground description leaked')
+            rpc('PUT', '/v1/rates', low)
+            # Lowest legal rates must not make SIGTERM wait ten seconds.
+            started = time.monotonic();server.send_signal(signal.SIGTERM);server.wait(timeout=3)
+            stop_seconds = time.monotonic() - started
+            require(server.returncode == 0 and stop_seconds < 2, 'low-rate Stop failed')
+            require(not os.path.exists(probe_socket), 'owned RPC socket leaked')
+            wait(lambda: all(p.get_num_connections() == 1 for p in source_pubs), 'server source subscriptions leaked')
+            require(rospy.get_param('/foreign/visual_robot_description') == 'foreign-owned', 'Stop erased foreign parameter')
+            print(json.dumps(dict(ok=True, scope='private ROS graph; not station/scientific acceptance',
+                relay_received=relay_counts, robots20=twenty, robots100=hundred,
+                source_history_points=path_size, simulated_rtf=3, delete20_seconds=delete20,
+                delete100_seconds=delete100, low_rate_stop_seconds=stop_seconds,
+                zero_robot_readiness=True, fixed_callback_workers=2, publisher_workers=1,
+                no_child_processes=True), sort_keys=True))
+            rospy.signal_shutdown('private probe complete')
+        except Exception:
+            logfile.flush()
+            print('PRIVATE PROCESS STATES: ' + repr([(p.pid, p.poll()) for p in processes]), file=sys.stderr)
+            if 'paths' in locals():
+                print('PRIVATE PATH SIZES: ' + repr([len(p.poses) for p in paths]), file=sys.stderr)
+            if 'pose_pubs' in locals():
+                print('PRIVATE MISSING INPUTS: ' + repr([i + 1 for i, p in enumerate(pose_pubs) if not p.get_num_connections()]), file=sys.stderr)
+            if 'observers' in locals():
+                print('PRIVATE OBSERVER CONNECTIONS: ' + repr([(p.resolved_name, p.get_num_connections()) for p in observers]), file=sys.stderr)
+            if 'rpc' in locals() and server.poll() is None:
+                try:
+                    _, _, state = xmlrpc.client.ServerProxy(master_uri).getSystemState('/private_probe')
+                    owned = {label: [(topic, nodes) for topic, nodes in entries if '/xgc2_ros_visualizer' in nodes]
+                             for label, entries in zip(('publishers', 'subscribers'), state[:2])}
+                    print('PRIVATE SERVER REGISTRY: ' + json.dumps(owned), file=sys.stderr)
+                    print('PRIVATE SERVER STATUS: ' + json.dumps(rpc('GET', '/v1/status')), file=sys.stderr)
+                except Exception as error:
+                    print('PRIVATE FAILURE READBACK: ' + repr(error), file=sys.stderr)
+            with open(logfile.name) as stream:
+                print('PRIVATE PROCESS LOG (last 5000 chars):\n' + stream.read()[-5000:], file=sys.stderr)
+            raise
+        finally:
+            for process in reversed(processes):
+                if process.poll() is None:
+                    os.killpg(process.pid, signal.SIGTERM)
+                    try:
+                        process.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(process.pid, signal.SIGKILL);process.wait(timeout=2)
+            logfile.close()
+
+
+if __name__ == '__main__':
+    require(len(sys.argv) == 2, 'expected one actual server executable')
+    main(os.path.abspath(sys.argv[1]))

@@ -23,17 +23,16 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 pkg_root="$work/package"
 mkdir -p "$pkg_root/DEBIAN" "$pkg_root/usr/share/doc/$package" "$output_dir" "$work/debian"
-for path in share/xgc2_ros_display_relays include/xgc2_ros_display_relays include/xgc2_ros_visualizer lib/pkgconfig/xgc2_ros_display_relays.pc lib/libxgc2_ros_display_relays.so lib/libxgc2_ros_visualizer_contract.so lib/xgc2_ros_display_relays lib/xgc2_ros_visualizer; do
+for path in share/xgc2_ros_visualizer include/xgc2_ros_visualizer lib/pkgconfig/xgc2_ros_visualizer.pc lib/libxgc2_ros_visualizer_runtime.so lib/libxgc2_ros_visualizer_contract.so lib/xgc2_ros_visualizer; do
   test -e "$stage/$path"
   mkdir -p "$pkg_root$prefix/$(dirname "$path")"
   cp -a "$stage/$path" "$pkg_root$prefix/$path"
 done
-for path in include/xgc2_ros_display_relays/display_relays.hpp include/xgc2_ros_display_relays/declared_wire.hpp include/xgc2_ros_display_relays/rate_gate.hpp share/xgc2_ros_display_relays/cmake/xgc2_ros_display_relaysConfig.cmake share/xgc2_ros_display_relays/package.xml; do
+for path in include/xgc2_ros_visualizer/config.hpp include/xgc2_ros_visualizer/declared_wire.hpp include/xgc2_ros_visualizer/scene_contract.hpp share/xgc2_ros_visualizer/cmake/xgc2_ros_visualizerConfig.cmake share/xgc2_ros_visualizer/package.xml; do
   test -s "$pkg_root$prefix/$path"
 done
-test -x "$pkg_root$prefix/lib/xgc2_ros_display_relays/xgc2_display_relays"
 test -x "$pkg_root$prefix/lib/xgc2_ros_visualizer/xgc2_ros_visualizer_node"
-test -s "$pkg_root$prefix/lib/libxgc2_ros_display_relays.so"
+test -s "$pkg_root$prefix/lib/libxgc2_ros_visualizer_runtime.so"
 test -s "$pkg_root$prefix/lib/libxgc2_ros_visualizer_contract.so"
 cat > "$work/debian/control" <<EOF
 Source: xgc2-ros-visualizer
@@ -43,12 +42,12 @@ Maintainer: XGC Team <867768510@qq.com>
 
 Package: $package
 Architecture: any
-Description: ROS1 visualization publisher and display relays
+Description: Single-process ROS1 visualization server
 EOF
 # ROS Noetic libraries have unversioned SONAMEs and dpkg-shlibdeps skips them.
 # roscpp explicitly owns those runtime DSOs; derive system-library requirements
 # from both ELF files. Message packages are required by the public SDK.
-shlibs="$(cd "$work" && dpkg-shlibdeps -O -l"$stage/lib" -l"$prefix/lib" -e"$stage/lib/libxgc2_ros_display_relays.so" -e"$stage/lib/libxgc2_ros_visualizer_contract.so" -e"$stage/lib/xgc2_ros_display_relays/xgc2_display_relays" -e"$stage/lib/xgc2_ros_visualizer/xgc2_ros_visualizer_node")"
+shlibs="$(cd "$work" && dpkg-shlibdeps -O -l"$stage/lib" -l"$prefix/lib" -e"$stage/lib/libxgc2_ros_visualizer_runtime.so" -e"$stage/lib/libxgc2_ros_visualizer_contract.so" -e"$stage/lib/xgc2_ros_visualizer/xgc2_ros_visualizer_node")"
 case "$shlibs" in shlibs:Depends=*) shlibs="${shlibs#shlibs:Depends=}" ;; *) exit 1 ;; esac
 test -n "$shlibs"
 cat > "$pkg_root/DEBIAN/control" <<EOF
@@ -58,14 +57,14 @@ Section: misc
 Priority: optional
 Architecture: $arch
 Maintainer: XGC Team <867768510@qq.com>
-Depends: $shlibs, ros-noetic-roscpp, ros-noetic-sensor-msgs, ros-noetic-nav-msgs, ros-noetic-geometry-msgs, ros-noetic-foxglove-msgs, ros-noetic-mavros-msgs, ros-noetic-std-msgs, ros-noetic-tf2-ros, ros-noetic-visualization-msgs, ros-noetic-xgc2-robot-visualization (>= 0.2.0-16)
+Depends: $shlibs, ros-noetic-roscpp, ros-noetic-roslib, ros-noetic-urdf, ros-noetic-sensor-msgs, ros-noetic-nav-msgs, ros-noetic-geometry-msgs, ros-noetic-foxglove-msgs, ros-noetic-mavros-msgs, ros-noetic-std-msgs, ros-noetic-tf2-ros, ros-noetic-visualization-msgs, ros-noetic-xgc2-robot-visualization (>= 0.2.0-16), ros-noetic-xgc2-fs150-description (>= 0.1.0-11), ros-noetic-xgc2-scout-description (>= 0.4.10-16), ros-noetic-xgc2-mecanum-description (>= 0.1.0-10)
 Description: XGC2 ROS1 visualization
- Subscriber-gated display copies plus the publisher that turns interface data
- into one visualization interface. Gazebo shadow rendering is not in this package.
+ Run-owned visualization instances, in-process URDF transforms and persistent
+ byte-preserving display relays. Gazebo rendering is not in this package.
 EOF
 cp "$repo_root/LICENSE" "$pkg_root/usr/share/doc/$package/copyright"
 find "$pkg_root" -type d -exec chmod 0755 {} +
 find "$pkg_root" -type f -exec chmod 0644 {} +
-chmod 0755 "$pkg_root$prefix/lib/libxgc2_ros_display_relays.so" "$pkg_root$prefix/lib/libxgc2_ros_visualizer_contract.so" "$pkg_root$prefix/lib/xgc2_ros_display_relays/xgc2_display_relays" "$pkg_root$prefix/lib/xgc2_ros_visualizer/xgc2_ros_visualizer_node"
+chmod 0755 "$pkg_root$prefix/lib/libxgc2_ros_visualizer_runtime.so" "$pkg_root$prefix/lib/libxgc2_ros_visualizer_contract.so" "$pkg_root$prefix/lib/xgc2_ros_visualizer/xgc2_ros_visualizer_node"
 rm -f "$output_dir/${package}_"*.deb
 dpkg-deb --root-owner-group --build "$pkg_root" "$output_dir/${package}_${version}_${arch}.deb"
