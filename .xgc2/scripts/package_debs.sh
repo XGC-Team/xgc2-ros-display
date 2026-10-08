@@ -58,7 +58,7 @@ Section: misc
 Priority: optional
 Architecture: $arch
 Maintainer: XGC Team <867768510@qq.com>
-Depends: $shlibs, ros-noetic-roscpp, ros-noetic-sensor-msgs, ros-noetic-nav-msgs, ros-noetic-geometry-msgs, ros-noetic-foxglove-msgs, ros-noetic-mavros-msgs, ros-noetic-std-msgs, ros-noetic-tf2-ros, ros-noetic-visualization-msgs, ros-noetic-xgc2-robot-visualization
+Depends: $shlibs, ros-noetic-roscpp, ros-noetic-sensor-msgs, ros-noetic-nav-msgs, ros-noetic-geometry-msgs, ros-noetic-foxglove-msgs, ros-noetic-mavros-msgs, ros-noetic-std-msgs, ros-noetic-tf2-ros, ros-noetic-visualization-msgs, ros-noetic-xgc2-robot-visualization (>= 0.2.0-16)
 Description: XGC2 ROS1 visualization
  Subscriber-gated display copies plus the publisher that turns interface data
  into one visualization interface. Gazebo shadow rendering is not in this package.

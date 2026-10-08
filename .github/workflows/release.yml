@@ -51,7 +51,7 @@ jobs:
           case "$PREPARE_ACTION" in release|compatibility-verify) ;; *) exit 1 ;; esac
           [[ -z "$DEPENDENCY_SET_DIGEST" || "$DEPENDENCY_SET_DIGEST" =~ ^[0-9a-f]{64}$ ]]
           [[ -z "$APT_OVERLAY_URL" || "$DEPENDENCY_SET_DIGEST" =~ ^[0-9a-f]{64}$ ]]
-          # This leaf has no internal XGC2 dependency; no overlay installation is needed.
+          # The build installs the published robot visualization dependency in its private container.
   build:
     needs: prepare-contract
     name: package-tests-debs-${{ matrix.name }}
@@ -86,7 +86,7 @@ jobs:
           install -d .ci/build-manifests
           .xgc2/scripts/build_debs_in_docker.sh \
             --image "$BUILD_IMAGE" \
-            --work-dir "$RUNNER_TEMP/ros-display-${{ matrix.name }}" \
+            --work-dir "$RUNNER_TEMP/ros-visualizer-${{ matrix.name }}" \
             --output-dir "$GITHUB_WORKSPACE/debs"
       - name: Create strict-v1 trusted build manifest
         run: |
@@ -95,7 +95,7 @@ jobs:
           test -n "$product_version"
           python3 .xgc2/scripts/xgc2_artifact_manifest.py build \
             --deb-dir debs --output-dir .ci/build-manifests \
-            --product xgc2-ros-display --product-version "$product_version" \
+            --product xgc2-ros-visualizer --product-version "$product_version" \
             --distribution "${{ matrix.distribution }}" --architecture "${{ matrix.arch }}" \
             --source-sha "$GITHUB_SHA" --ci-run-id "$GITHUB_RUN_ID" \
             --ci-workflow "$GITHUB_WORKFLOW" --ci-workflow-ref "$GITHUB_WORKFLOW_REF"
@@ -103,7 +103,7 @@ jobs:
         if: ${{ inputs.prepare_action == 'release' }}
         uses: actions/upload-artifact@v4
         with:
-          name: xgc2-ros-display-debs-${{ matrix.name }}
+          name: xgc2-ros-visualizer-debs-${{ matrix.name }}
           path: |
             debs/*.deb
             .ci/build-manifests/*.json

@@ -1,7 +1,7 @@
 schema: xgc2.product.v1
 id: xgc2-ros-visualizer
 name: XGC2 ROS Visualizer
-version: 0.2.0-1
+version: 0.2.0-2
 kind: ros1-apt
 summary: ROS1 visualization product. Display copies stay subscriber-gated, and the publisher turns interface data into one visualization interface.
 ros:
@@ -40,4 +40,4 @@ release:
   dependency_policy:
     xgc2-robot-visualization: rebuild
   apt_versions:
-    focal: 0.2.0-1~focal
+    focal: 0.2.0-2~focal

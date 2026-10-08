@@ -877,14 +877,14 @@ class RosVisualizer {
         if (stamp.isZero()) {
             stamp = ros::Time(1, 0);
         }
-        const foxglove_msgs::SceneUpdate update =
-            xgc2_ros_visualizer::worldBoundarySceneUpdate(boundary, stamp, frame_id_);
-        world_boundary_pub_.publish(update);
-        world_boundary_ar_pub_.publish(update);
-        const foxglove_msgs::SceneUpdate walls_update =
-            xgc2_ros_visualizer::worldWallsSceneUpdate(boundary, stamp, frame_id_);
-        world_boundary_walls_pub_.publish(walls_update);
-        world_boundary_walls_ar_pub_.publish(walls_update);
+        std::string mode;
+        private_nh_.param<std::string>("world_boundary_mode", mode, "walls");
+        const auto layers = xgc2_ros_visualizer::worldBoundaryLayerMessages(
+            boundary, xgc2_ros_visualizer::worldBoundaryDisplayModeFromString(mode), stamp, frame_id_);
+        world_boundary_pub_.publish(layers.ground);
+        world_boundary_ar_pub_.publish(layers.ground);
+        world_boundary_walls_pub_.publish(layers.walls);
+        world_boundary_walls_ar_pub_.publish(layers.walls);
     }
 
     void publishCallback(const ros::TimerEvent&) {

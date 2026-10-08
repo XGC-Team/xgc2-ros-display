@@ -88,9 +88,8 @@ ROS API reference: [AdvertiseOptions](https://github.com/ros/ros_comm/blob/noeti
 documents serialized header sequence rewriting; [serialization](https://github.com/ros/roscpp_core/blob/noetic-devel/roscpp_serialization/include/ros/serialization.h)
 provides the bounded streams used by the raw payload serializer.
 
-The first Noetic/Focal APT identity was `ros-noetic-xgc2-ros-display`
-`0.1.0-1~focal`. The current package is `ros-noetic-xgc2-ros-visualizer`
-`0.2.0-1~focal`. One native package contains the relay library and node, the
+The Noetic/Focal package is `ros-noetic-xgc2-ros-visualizer`.
+One native package contains the relay library and node, the
 visualization publisher, and their headers. Native system-library requirements
 are derived with dpkg-shlibdeps. The package depends on
 `ros-noetic-xgc2-robot-visualization`.
@@ -101,13 +100,14 @@ existing controlled Noetic 1.0.0 image, locked by multiarch digest above (amd64
 `2d28bb572abb63825dddbffa2b1ad9198e4b0b472aedd021783f906e99c72d78`). Source
 binds are read-only; writable build/output binds use the calling UID/GID. Build,
 source tests, new argv rejection controls and installation run within private
-containers without external network. Installed-Deb gates check the native DSO
+containers. Build and installation obtain the robot visualization dependency
+from production APT. Installed-Deb gates check the native DSO
 and executable, compile/link an independent SDK consumer, and exercise the
 actual node across processes with all four serialized payloads and Stop. CI
 retains only Debs and strict `xgc2.build-artifact.v1` manifests for 14 days.
 
 ```sh
-.xgc2/scripts/build_debs_in_docker.sh --work-dir /tmp/ros-display-build --output-dir "$PWD/debs"
+.xgc2/scripts/build_debs_in_docker.sh --work-dir /tmp/ros-visualizer-build --output-dir "$PWD/debs"
 ```
 
 `release.yml` accepts only the existing central prepare/compatibility contract;
