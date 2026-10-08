@@ -1,4 +1,5 @@
 #include "server.hpp"
+#include <xgc2_ros_visualizer/instance_input.hpp>
 #include <algorithm>
 #include <chrono>
 #include <regex>
@@ -108,5 +109,9 @@ Json::Value Server::activateInstance(const std::string& id,const Json::Value& co
   const auto claims=prepared->claims();
   for(const auto& item:instances_) {const auto occupied=item.second->claims();for(const auto& claim:claims)if(occupied.count(claim))throw ControlFailure(ControlError::Conflict,"instance output conflicts with "+item.first+": "+claim);}
   prepared->activate(input_);instances_.emplace(id,prepared);replaceSnapshot();return prepared->status();
+}
+Json::Value Server::activateFrozenInstance(const std::string& id,const Json::Value& input) {
+  requireRunning();validateInstanceId(id);
+  return activateInstance(id,projectInstanceInput(input));
 }
 } // namespace xgc2_ros_visualizer

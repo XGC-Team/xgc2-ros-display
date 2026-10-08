@@ -14,7 +14,7 @@ add_library(xgc2_ros_visualizer_rpc STATIC src/server/rpc.cpp)
 set_target_properties(xgc2_ros_visualizer_rpc PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_features(xgc2_ros_visualizer_rpc PRIVATE cxx_std_20)
 target_link_libraries(xgc2_ros_visualizer_rpc PRIVATE XgcXrpc::http XgcXrpc::policy XgcXrpc::diagnostics)
-add_library(xgc2_ros_visualizer_runtime SHARED src/runtime/config.cpp src/runtime/bootstrap.cpp src/runtime/input_pool.cpp
+add_library(xgc2_ros_visualizer_runtime SHARED src/runtime/config.cpp src/runtime/instance_input.cpp src/runtime/input_pool.cpp
   src/runtime/descriptions.cpp src/runtime/instance.cpp src/relay/relay.cpp src/server/server.cpp)
 foreach(target xgc2_ros_visualizer_contract xgc2_ros_visualizer_rpc xgc2_ros_visualizer_runtime)
   target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)

@@ -1,6 +1,5 @@
 #include "server/server.hpp"
 #include "server/routes.hpp"
-#include <xgc2_ros_visualizer/bootstrap.hpp>
 #include <ros/ros.h>
 #include <algorithm>
 #include <exception>
@@ -35,7 +34,7 @@ int main(int argc,char** argv) {
         rpc_options.environment.emplace_back(item.substr(0,equal),equal==std::string::npos?"":item.substr(equal+1));
       }
     }
-    std::string socket,world_clock="wall",rates_json="{}",initial_file;
+    std::string socket,world_clock="wall",rates_json="{}";
     std::size_t workers=2;
     std::vector<std::string> arguments{argv[0]};
     std::vector<std::string> selected;
@@ -47,7 +46,7 @@ int main(int argc,char** argv) {
           throw std::invalid_argument("startup option occurs more than once: "+argument);
         selected.push_back(argument);
         if(argument!="--socket"&&argument!="--target-id"&&argument!="--callback-workers"&&
-            argument!="--world-clock"&&argument!="--rates-json"&&argument!="--initial-instance-file")
+            argument!="--world-clock"&&argument!="--rates-json")
           throw std::invalid_argument("unknown startup option: "+argument);
         if(++i==argc)throw std::invalid_argument("startup option requires a value: "+argument);
         const std::string value=argv[i];
@@ -55,7 +54,6 @@ int main(int argc,char** argv) {
         else if(argument=="--target-id")rpc_options.target_id=value;
         else if(argument=="--world-clock")world_clock=value;
         else if(argument=="--rates-json")rates_json=value;
-        else if(argument=="--initial-instance-file")initial_file=value;
         else {
           if(value.empty()||value.size()>2||value[0]=='0'||!std::all_of(value.begin(),value.end(),[](char c){return c>='0'&&c<='9';}))
             throw std::invalid_argument("callback-workers must be an ASCII integer within 1..32");
@@ -99,11 +97,6 @@ int main(int argc,char** argv) {
       catch(...) {ros::shutdown();throw;}
       ros::shutdown();
     });
-    if(!initial_file.empty()) {
-      const auto initial=xgc2_ros_visualizer::readBootstrap(initial_file);
-      const auto status=server.activateInstance(initial.instance_id,initial.request);
-      if(!status["ready"].asBool())throw std::runtime_error("initial native instance is not ready");
-    }
     transport.run(server.stopping());server.rethrowFailure();return 0;
   } catch(const std::exception& error) {std::cerr<<"visualizer server failed: "<<std::string(error.what()).substr(0,512)<<'\n';return 1;}
 }

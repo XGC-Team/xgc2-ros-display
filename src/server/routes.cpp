@@ -29,7 +29,7 @@ RpcReply routeRpc(Server& server,const std::string& method,const std::string& pa
     if(path.compare(0,prefix.size(),prefix)!=0)return error(404,"unknown route");
     const auto id=path.substr(prefix.size());
     if(method=="GET")return {200,server.instanceStatus(id)};
-    if(method=="PUT")return {200,server.activateInstance(id,body)};
+    if(method=="PUT")return {200,server.activateFrozenInstance(id,body)};
     if(method=="DELETE")return {200,server.removeInstance(id)};
     validateInstanceId(id);return error(405,"instance supports GET, PUT or DELETE");
   } catch(const ControlFailure& failure) {

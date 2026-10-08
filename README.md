@@ -6,12 +6,14 @@
 workers), one publication scheduler, and a bounded XRPC Unix HTTP control loop plus one fixed domain worker.
 Robots, descriptions and relays are instance data. Adding robots does not create
 application threads, helper processes or `robot_state_publisher` children.
-Core uses its ordinary supervised process definition and a frozen startup file;
-normal Stop terminates that Run's server and removes its bootstrap file.
+Core uses its ordinary supervised process definition, registers the actual
+ServiceRef and explicitly activates that Run through RPC. Normal Stop terminates
+that Run's native server.
 The native application owns readiness, input/publication workers and the XRPC
 endpoint for that same lifetime. Its domain control functions own instance
 activation/removal, rate CAS and status data. The RPC adapter maps wire requests
-to those functions; startup calls the same native activation function directly.
+to those functions; frozen Robot/context projection also stays in the native
+product. Startup creates no domain membership.
 
 The separate `xgc2_robot_visualization` dependency supplies FS150, Scout and
 Mecanum geometry, wheel/rotor animation calculations, frame names and path
@@ -28,7 +30,8 @@ process options are `--socket` (a socket path in a supervisor-granted private
 0700 runtime directory) and `--target-id`. The provider creates its incarnation.
 Optional options are `--callback-workers` (1–32), `--rates-json` (an object
 overlaying defaults), `--world-clock` (`wall` or `simulation`, default `wall`)
-and `--initial-instance-file`. The product reads no ROS master bootstrap
+without a domain startup file. `--initial-instance-file` is retired and rejected.
+The product reads no ROS master bootstrap
 parameters; private product parameter aliases are rejected. The clock is immutable
 and selected before ROS initialization; an existing `/use_sim_time` remap is
 preserved. Do not separately pass `_use_sim_time`.
@@ -38,7 +41,7 @@ rejected so native log writes retain their supervisor-allocated location.
 ```sh
 rosrun xgc2_ros_visualizer xgc2_ros_visualizer_node \
   --socket "$XGC_RUNTIME_DIR/visualizer.sock" --target-id local-agent \
-  --world-clock simulation --initial-instance-file /private/input.json
+  --world-clock simulation
 curl --unix-socket "$XGC_RUNTIME_DIR/visualizer.sock" \
   -H 'X-Request-ID: discover-1' -H 'X-Xrpc-Timeout-Ms: 3000' \
   http://localhost/v1/describe
@@ -61,19 +64,19 @@ policy uses startup-snapshotted `XGC2_XRPC_` settings and explicit ceilings.
 | `GET /v1/rates` | Complete table and desired/applied/persisted revisions |
 | `PUT /v1/rates` | `{expectedRevision, rates}` atomically replaces the complete table; invalid/stale candidates leave it unchanged |
 
-A native instance request contains exactly `robots`, `descriptions`,
-`worldBoundary`, `settings` and `displayRelays`. The first two are the existing
-robot visualization/description roster arrays. Settings use the existing
-snake-case field names; unknown fields and legacy individual publish-rate
-settings are rejected. Empty rosters are valid. Configured scene instances,
+A wire instance request contains exactly `robots`, `context`, `settings` and
+`displayRelays`: the full frozen public Robot/context/panel values. The native
+product projects and validates its own visualization fields atomically; Core
+does not construct a second projected roster. The Run ID is in the request path,
+and the ServiceRef incarnation is provider-generated. Empty rosters are valid. Configured scene instances,
 including zero-robot worlds, publish `/xgc/robot_scene/ready`; this acknowledges
 configuration, not fresh robot poses or scientific progress. Descriptions also
 publish `/xgc/robot_descriptions/ready`.
 
-The optional startup file contains exactly:
+After native startup and ServiceRef discovery, the explicit bound PUT body is:
 
 ```json
-{"instanceId":"existing-run-id","robots":[],"context":{"runMode":"simulation","worldClock":"simulation","worldBoundary":null},"settings":{},"displayRelays":[]}
+{"robots":[],"context":{"runMode":"simulation","worldClock":"simulation","worldBoundary":null},"settings":{},"displayRelays":[]}
 ```
 
 `robots` is the complete frozen public Robot array, `context` the complete
@@ -82,11 +85,14 @@ The server projects these values and creates the instance through the same
 validated registry path as RPC. Namespace, scene model and installed description
 metadata come from each Robot's visualization configuration. FS150 AR uses only
 `localizationSources[context.runMode].poseTopic` and its frozen offset. Missing
-selected sources fail startup; no VRPN/profile/topic guessing or second offset
+selected sources reject activation; no VRPN/profile/topic guessing or second offset
 application occurs. Numeric slot palette ordering and the original Scout mocap
 scene-model binding are preserved. Unrelated panel fields remain Viewer-owned.
-A startup file must be a nonempty regular file of at most 1 MiB; symlinks are
-rejected.
+Optional `settings.publication` has boolean `markers`, `transforms`, `scene`,
+`scenePaths`, `paths`, `groundScene` for explicit native publication control.
+Native internal projected configuration remains directly callable data, and is
+not an alternate RPC wire format. The final shared `--bootstrap-input` loader is
+an open C++ SDK gate; the current product does not claim to implement it.
 
 Instances cannot share the existing global scene/frame outputs on the same ROS
 graph. Independent relay-only instances can disable scene/transforms and use
@@ -138,15 +144,16 @@ time and respects rollback/reset semantics. URDF XML is loaded from installed
 package-relative files. Parameters and fixed/movable joint transforms are
 produced in-process using the original description prefix; no RSP is forked.
 
-A relay request is `{source,topic,messageType,robotKind}`. Source names are unique
+A wire relay request is `{source,topic,messageType}`; its kind comes from the
+frozen Robot roster. Source names are unique
 canonical absolute names outside `/xgc/display`; output is exactly
 `/xgc/display` + source. Maximum 64 per instance. Only PointCloud2,
 OccupancyGrid, Path and PoseArray full-state messages are accepted. The relay
 receives serialized bytes once and publishes the same immutable pointer using
 the original type/MD5/definition. It does not decode, rewrite Header sequence,
 convert fields, replay previously published samples or budget the source itself.
-Bootstrap relay records carry exactly `source`, `topic` and `messageType`; the
-frozen Robot roster determines kind. Individual relay rate fields are rejected.
+The native relay representation also carries the product-projected kind. A wire
+`robotKind` or individual relay rate field is rejected.
 
 Membership, queues, latest-message retention and history point counts are
 bounded. Variable ROS payload bytes and ROS serialization/transport allocations

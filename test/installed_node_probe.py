@@ -62,24 +62,20 @@ def resources(pid):
 
 
 def robot(name, ar=False):
-    result = dict(name=name, namespace='/' + name, descriptionPackage='fs150_description',
-                  descriptionFile='urdf/fs150_visual.urdf', robotStatePublisher=False,
-                  jointStateTopic='joint_states', sceneModel=name, odometryTopic='',
-                  pathTopic='path', worldOffset=[1, 2, 3] if ar else [0, 0, 0])
-    if ar:
-        result.update(arPoseTopic='/raw/' + name, arPathTopic='ar_path',
-                      heightProjectionColor='#f2003c')
-    return result
+    return dict(name=name, namespace='/' + name, kind='px4_multirotor',
+                visualization=dict(sceneClass='fs150', sceneModel=name,
+                    descriptionPackage='fs150_description', descriptionFile='urdf/fs150_visual.urdf',
+                    robotStatePublisher=False, jointStateTopic='joint_states', pathTopic='path'),
+                localizationSources=dict(simulation=dict(poseTopic='/raw/' + name if ar else
+                    '/' + name + '/mavros/local_position/pose',
+                    offset=dict(x=1 if ar else 0, y=2 if ar else 0, z=3 if ar else 0))))
 
 
 def instance(count=0, relays=None, scene=True):
     rows = [robot('uav%d' % (i + 1), i == 0) for i in range(count)]
-    settings = dict(frame_id='world', use_sim_time=True, publish_transforms=scene,
-                    publish_scene_update=scene, publish_markers=scene,
-                    publish_scene_paths=scene, publish_paths=scene,
-                    tracked_fs150_models=','.join(row['name'] for row in rows))
-    return dict(robots=rows, descriptions=[], worldBoundary=None,
-                settings=settings, displayRelays=relays or [])
+    return dict(robots=rows, context=dict(runMode='simulation', worldClock='simulation', worldBoundary=None),
+                settings=dict(publication=dict(transforms=scene, scene=scene, markers=scene,
+                                               scenePaths=scene, paths=scene)), displayRelays=relays or [])
 
 
 def main(binary):
@@ -151,25 +147,35 @@ def main(binary):
                     require(result['desiredRevision'] == rate_revision and result['persistedRevision'] is None,
                             'rate receipt conflates desired/applied/persisted')
                 return result
-            initial = os.path.join(work, 'input.json')
-            with open(initial, 'w') as stream:
-                json.dump(dict(instanceId='initial-zero', robots=[], context=dict(
+            retired_initial = os.path.join(work, 'retired-input.json')
+            with open(retired_initial, 'w') as stream:
+                json.dump(dict(instanceId='old-initial', robots=[], context=dict(
                     runMode='simulation', worldClock='simulation', worldBoundary=None),
                     settings={}, displayRelays=[]), stream)
             server = subprocess.Popen([binary, '--socket', probe_socket,
                 '--target-id', 'private-probe', '--callback-workers', '2',
-                '--world-clock', 'simulation', '--initial-instance-file', initial,
+                '--world-clock', 'simulation',
                 '/use_sim_time:=/xgc2_ros_visualizer/use_sim_time'],
                 stdout=logfile, stderr=logfile, start_new_session=True)
             processes.append(server)
             wait(lambda: os.path.exists(probe_socket) or server.poll() is not None,
                  'server socket absent')
-            require(server.poll() is None, 'server exited during bootstrap')
+            require(server.poll() is None, 'server exited during native startup')
             description = rpc('GET', '/v1/describe')
             instance_id = description['service_ref']['instance_id']
             require(description['service_ref']['target_id'] == 'private-probe', 'wrong ServiceRef target')
             require(rpc('GET', '/v1/health')['callbackWorkers'] == 2, 'wrong input pool size')
-            require(rpc('GET', '/v1/instances/initial-zero')['ready'], 'zero bootstrap not ready')
+            require(rpc('GET', '/v1/status')['instanceCount'] == 0, 'startup implicitly activated an instance')
+            legacy = dict(instanceId='old', robots=[], context=dict(runMode='simulation',
+                worldClock='simulation', worldBoundary=None), settings={}, displayRelays=[])
+            rpc('PUT', '/v1/instances/retired-input', legacy, 400)
+            projected = dict(robots=[], descriptions=[], worldBoundary=None, settings={}, displayRelays=[])
+            rpc('PUT', '/v1/instances/retired-input', projected, 400)
+            rpc('GET', '/v1/instances/retired-input', expected=404)
+            receipt = rpc('PUT', '/v1/instances/explicit-zero', instance())
+            require(receipt['ready'] and receipt['configuration']['desiredRevision'] == 1 and
+                    receipt['configuration']['appliedRevision'] == 1 and
+                    receipt['configuration']['persistedRevision'] is None, 'zero activation receipt invalid')
             ready = []
             ready_sub = rospy.Subscriber('/xgc/robot_scene/ready', Empty, lambda _: ready.append(True), queue_size=1)
             sim_time = 100.0
@@ -197,10 +203,10 @@ def main(binary):
                             name=joint_publisher[1], position=[.5] * len(joint_publisher[1])))
                     time.sleep(.02)
             pump(.15)
-            wait(lambda: bool(ready), 'zero-robot bootstrap readiness missing')
+            wait(lambda: bool(ready), 'zero-robot explicit activation readiness missing')
             require(rospy.get_param('/xgc2_ros_visualizer/use_sim_time'), 'catalog clock remap not honored')
-            rpc('DELETE', '/v1/instances/initial-zero')
-            rpc('GET', '/v1/instances/initial-zero', expected=404)
+            rpc('DELETE', '/v1/instances/explicit-zero')
+            rpc('GET', '/v1/instances/explicit-zero', expected=404)
             baseline = resources(server.pid)
             default_rates = rpc('GET', '/v1/rates')['rates']
             original_revision = rate_revision
@@ -223,7 +229,7 @@ def main(binary):
             types = [PointCloud2, OccupancyGrid, Path, PoseArray]
             type_names = ['sensor_msgs/PointCloud2', 'nav_msgs/OccupancyGrid', 'nav_msgs/Path', 'geometry_msgs/PoseArray']
             sources = ['/probe/cloud', '/probe/grid', '/probe/path', '/probe/poses']
-            relay_specs = [dict(source=s, topic='/xgc/display' + s, messageType=t, robotKind='global') for s, t in zip(sources, type_names)]
+            relay_specs = [dict(source=s, topic='/xgc/display' + s, messageType=t) for s, t in zip(sources, type_names)]
             source_pubs = [rospy.Publisher(s, t, queue_size=1) for s, t in zip(sources, types)]
             original = [collections.deque(maxlen=256) for _ in types]
             displayed = [collections.deque(maxlen=256) for _ in types]
@@ -267,7 +273,7 @@ def main(binary):
             for peer in peers:
                 peer.unregister()
             wait(lambda: all(p.get_num_connections() >= 2 for p in source_pubs), 'disconnect removed source subscription')
-            changed = copy.deepcopy(foreign); changed['settings']['publish_paths'] = True
+            changed = copy.deepcopy(foreign); changed['settings']['publication']['paths'] = True
             rpc('PUT', '/v1/instances/foreign-relay', changed, 409)
             require(rpc('PUT', '/v1/instances/foreign-relay', foreign)['unchanged'], 'retry was not a no-op')
             invalid = instance(1);invalid['robots'][0]['namespace'] = '/bad_slot'
@@ -321,9 +327,10 @@ def main(binary):
                 # Wait for discovery to settle before reusing the same namespace.
                 wait(discovery_released, 'deleted resources remained in private master registry')
             hundred_request = instance(100)
-            description = robot('described');description['sceneModel'] = '';description['robotStatePublisher'] = True
-            description.update(descriptionPackage='scout_description', descriptionFile='urdf/scout_visual.urdf')
-            hundred_request['descriptions'] = [description]
+            description = robot('described');description['kind'] = 'description_only'
+            description['visualization'].update(sceneClass='', sceneModel='', robotStatePublisher=True,
+                descriptionPackage='scout_description', descriptionFile='urdf/scout_visual.urdf')
+            hundred_request['robots'].append(description)
             low = {kind: {channel: .1 for channel in channels} for kind, channels in default_rates.items()}
             rpc('PUT', '/v1/rates', low)
             rpc('PUT', '/v1/instances/robots100', hundred_request)
@@ -362,7 +369,7 @@ def main(binary):
             for observer in observers:
                 observer.unregister()
             path_only = instance(1);path_only['robots'] = [robot('uav101')]
-            path_only['settings'].update(tracked_fs150_models='uav101', publish_paths=False)
+            path_only['settings']['publication']['paths'] = False
             markers.clear();scenes.clear()
             rpc('PUT', '/v1/instances/path-only', path_only)
             observers = observe(paths_enabled=False)
@@ -380,10 +387,11 @@ def main(binary):
             wait(discovery_released, 'path-only discovery did not settle after DELETE')
             disabled_ground = instance()
             ground_row = robot('ugv102')
-            ground_row.update(descriptionPackage='scout_description', descriptionFile='urdf/scout_visual.urdf')
+            ground_row['kind'] = 'scout_mini'
+            ground_row['visualization'].update(sceneClass='scout', descriptionPackage='scout_description',
+                descriptionFile='urdf/scout_visual.urdf')
             disabled_ground['robots'] = [ground_row]
-            disabled_ground['descriptions'] = [copy.deepcopy(ground_row)]
-            disabled_ground['settings'].update(tracked_scout_models='ugv102', track_ugv=False)
+            disabled_ground['settings']['publication']['groundScene'] = False
             ground_source = rospy.Publisher('/ugv102/pose', PoseStamped, queue_size=1)
             status = rpc('PUT', '/v1/instances/ground-disabled', disabled_ground)
             require(status['robotCount'] == 0 and status['descriptionCount'] == 1,
@@ -404,7 +412,8 @@ def main(binary):
             wait(lambda: all(p.get_num_connections() == 1 for p in source_pubs), 'server source subscriptions leaked')
             require(rospy.get_param('/foreign/visual_robot_description') == 'foreign-owned', 'Stop erased foreign parameter')
             for arguments in (["_server_instance_id:=old"], ["__log:=" + work + "/unallocated.log"], ["--callback-workers", "0"],
-                              ["--world-clock", "guess"], ["--target-id", "duplicate"]):
+                              ["--world-clock", "guess"], ["--target-id", "duplicate"],
+                              ["--initial-instance-file", retired_initial]):
                 rejected = subprocess.run([binary, '--socket', os.path.join(work, 'invalid.sock'),
                     '--target-id', 'private-probe'] + arguments, stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE, timeout=3)
@@ -415,8 +424,8 @@ def main(binary):
                 '--target-id', 'private-probe'], env=missing_allocation, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, timeout=3)
             require(rejected.returncode != 0, 'missing cache allocation fell back to HOME')
-            # Stale master parameters have no authority over explicit CLI bootstrap.
-            rospy.set_param('/xgc2_ros_visualizer/initial_instance_file', initial)
+            # Stale master parameters and retired files cannot restore native membership.
+            rospy.set_param('/xgc2_ros_visualizer/initial_instance_file', retired_initial)
             rospy.set_param('/xgc2_ros_visualizer/server_instance_id', 'old-provider')
             previous_incarnation = instance_id
             restarted = subprocess.Popen([binary, '--socket', probe_socket,
@@ -495,7 +504,8 @@ def main(binary):
                 relay_received=relay_counts, robots20=twenty, robots100=hundred,
                 source_history_points=path_size, simulated_rtf=3, delete20_seconds=delete20,
                 delete100_seconds=delete100, low_rate_stop_seconds=stop_seconds,
-                zero_robot_readiness=True, fixed_callback_workers=2, publisher_workers=1,
+                zero_robot_readiness=True, explicit_activation=True, retired_initial_file_rejected=True,
+                retired_wire_envelopes_rejected=True, fixed_callback_workers=2, publisher_workers=1,
                 restart_incarnation_fenced=True, rate_cas_conflict=True, ephemeral_restart=True,
                 sigkill_stale_endpoint_recovered=True, crash_incarnation_fenced=True,
                 sigkill_native_relay_fenced=True, crash_relay_no_replay=True,

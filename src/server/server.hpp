@@ -29,6 +29,7 @@ class Server {
   Json::Value replaceRates(std::uint64_t expected_revision,const Json::Value& complete_rates);
   Json::Value instanceStatus(const std::string& id) const;
   Json::Value activateInstance(const std::string& id,const Json::Value& configuration);
+  Json::Value activateFrozenInstance(const std::string& id,const Json::Value& input);
   Json::Value removeInstance(const std::string& id);
   const std::atomic<bool>& stopping() const { return stopping_; }
   void stop();

@@ -120,6 +120,7 @@ class RpcServer::Impl {
     description_["domain"]["rates"]["revisionChecked"] = true;
     description_["domain"]["rates"]["persistence"] = false;
     description_["domain"]["instances"]["immutableConfiguration"] = true;
+    description_["domain"]["instances"]["inputSchema"] = "frozen-visualization-input-v1";
     description_["domain"]["instances"]["persistence"] = false;
     description_["resources"]["domainWorkers"] = 1;
     description_["resources"]["domainQueueCapacity"] = Json::UInt64(slots_.size());

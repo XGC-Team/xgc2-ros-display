@@ -2,7 +2,7 @@
 
 The service is `xgc2.visualization`, API version `1`, profile `http.v1`.
 The process supervisor supplies `--socket`, `--target-id`, ROS graph settings,
-managed ROS cache/log directories and an optional frozen startup document.
+managed ROS cache/log directories. Startup creates no domain instances.
 The provider creates a fresh random incarnation on every process start. Product
 bootstrap is explicit native CLI input, never an inherited ROS master parameter;
 old private product parameter aliases are rejected.
@@ -29,11 +29,27 @@ from a confirmed domain rejection; writes are never automatically replayed.
 | `GET /v1/rates` | Empty | Complete rate table and desired/applied/persisted revisions |
 | `PUT /v1/rates` | `{expectedRevision, rates}` | Revision CAS and atomic replacement of the complete validated table |
 | `GET /v1/instances/<id>` | Empty | Existing immutable configuration readiness and native counts |
-| `PUT /v1/instances/<id>` | Complete instance document | Native activation or an identical-content no-op; conflicting content is 409 |
+| `PUT /v1/instances/<id>` | Complete frozen input `{robots, context, settings, displayRelays}` | Native projection and activation or an identical owned-configuration no-op; conflicting content is 409 |
 | `DELETE /v1/instances/<id>` | Empty | Native callback/publication fence and deletion of only owned outputs |
 
-IDs contain 1–128 ASCII letters, digits, `_`, `.` or `-`. Instance documents have
-exactly `robots`, `descriptions`, `worldBoundary`, `settings`, `displayRelays`.
+IDs contain 1–128 ASCII letters, digits, `_`, `.` or `-`. The path owns the Run's
+domain instance ID; the body has exactly `robots`, `context`, `settings`,
+`displayRelays`. `robots` is the complete frozen public Robot array (at most 256);
+`context` is the complete frozen session context, including `runMode`,
+`worldClock`, `worldBoundary`. `settings` is the full panel settings object.
+`displayRelays` contains at most 64 records with exactly `source`, `topic`,
+`messageType`. The native product projects description/model metadata, selected
+localization source/offset, palettes and relay kind from those values. Core
+passes them through without reimplementing domain projection. The retired
+`instanceId` body envelope and projected `descriptions`/`worldBoundary` wire
+document are rejected; neither is another accepted activation format.
+
+Optional `settings.publication` contains only boolean `markers`, `transforms`,
+`scene`, `scenePaths`, `paths`, `groundScene`. Defaults are respectively false,
+true, true, false, true, true. These explicit native publication controls retain
+relay-only operation, independent Marker/Scene paths and description-only ground
+rosters. A normal frozen panel needs no publication override. Other panel fields
+remain owned by their existing Viewer/product consumers.
 The complete rate table has the kind/channel fields described in the README.
 Rates are finite 0.1–1000 Hz values; unknown/missing fields fail before mutation.
 A rate update requires an integer positive `expectedRevision`; unknown fields,
@@ -49,19 +65,88 @@ is likewise immutable and ephemeral: activation has desired/applied revision 1
 and no persisted revision. Native activation does not assert fresh sensor data,
 Viewer rendering, or scientific progress.
 
-The startup document has exactly `instanceId`, `robots`, `context`, `settings`,
-`displayRelays`. It carries the public frozen Robot records and full panel/context
-values; the product projects only its owned visualization fields. Bootstrap relay
-records have exactly `source`, `topic`, `messageType`; robot kind comes from the
-frozen Robot roster. RPC relay records instead carry `robotKind` explicitly.
-Individual relay rate fields are rejected. The process incarnation is distinct
-from the startup document's Run-owned instance ID.
+The process incarnation in ServiceRef is distinct from the Run-owned domain
+instance ID. The provider generates it; no `serverInstanceId` is supplied by a
+manifest, stored or copied between starts. Individual relay rate fields and a
+caller-supplied relay `robotKind` are rejected.
+
+## Consumer sequence and completion
+
+The existing workflow explicitly starts this one native executable. Its generic
+service discovery performs `GET /v1/describe` with finite request metadata and
+registers the returned ServiceRef only after checking the selected `target_id`,
+`service: xgc2.visualization`, `api_version: "1"`, `profile: http.v1` and allocated
+endpoint. Discovery starts no process and creates no domain membership. No
+separate RPC process, ROS ready-topic probe, `/health` probe or manufactured
+incarnation is part of this sequence.
+
+The workflow next sends one bound `PUT /v1/instances/<runId>` with its already
+frozen values, for example:
+
+```json
+{"robots":[],"context":{"runMode":"simulation","worldClock":"simulation","worldBoundary":null},"settings":{},"displayRelays":[]}
+```
+
+Completion requires HTTP 200, `ok: true`, `id` equal to the requested Run ID,
+`ready: true`, and `configuration.desiredRevision == appliedRevision == 1` with
+`persistedRevision: null`. The native provider validates the whole candidate,
+realizes installed URDFs, registers inputs/outputs and activates membership before
+returning this receipt. It does not merely enqueue the operation. Matching owned
+configuration is a no-op with `unchanged: true`; a different owned candidate is
+409 and requires an explicit DELETE before replacement. Invalid input, clock
+mismatch and output conflicts leave existing membership unchanged. Native ready
+does not prove a fresh pose, Viewer frame, completed camera operation or scientific
+progress; those existing consumer success conditions remain separate.
+
+Run removal sends bound `DELETE /v1/instances/<runId>` with a genuinely empty
+body. HTTP 200, `ok: true`, the same `id` and `removed: true` mean that native
+publication in flight is fenced, relay/subscription work is stopped and only
+owned outputs/unchanged owned parameters are removed. Repeating removal is safe.
+ROS master discovery unregistration can settle asynchronously after this native
+fence; the receipt does not assert that the remote discovery cache is empty.
+
+Stopping the native process uses its existing SIGTERM/process-stop owner and
+waits for actual process exit. The application joins domain/publication/input
+work, removes owned outputs and shuts down ROS before SDK drain releases its
+socket lease. A caller timeout or forced crash is an unknown-effects outcome,
+not a successful stop or rollback. There is no separate RPC shutdown method or
+Core sidecar drain. Restart changes ServiceRef incarnation, rejects stale bound
+calls and restores no instance/rate state; reactivation is a new explicit action,
+never an automatic replay of an uncertain mutation.
+
+## Startup binding migration
+
+`--initial-instance-file`, its reader/public Bootstrap helper, and implicit
+startup activation are removed. Old ROS-master `initial_instance_file` and
+`server_instance_id` values remain non-authoritative; private parameter aliases
+and the retired CLI option fail startup. Consumers remove `bootstrapJson`,
+`bootstrapFile` and product-specific file materialization. Freeze the domain input
+once in the workflow, then pass it in the explicit PUT above.
+
+The current executable accepts required `--socket` and `--target-id`, optional
+`--callback-workers`, `--world-clock`, `--rates-json`, plus standard ROS remaps.
+Target is never defaulted to `local`; it is actually returned in ServiceRef.
+`ROS_HOME` and `ROS_LOG_DIR` require explicit absolute process-owner allocations.
+The world clock is immutable and must match `context.worldClock` on activation.
+
+The final common startup contract is XRPC `contracts/bootstrap-input.schema.json`
+and `bootstrap.schema.json`: one `--bootstrap-input /explicit/path` containing
+the binding and opaque native application startup settings. Its binding fixes
+`target_id`, `service`, `api_version`, `profile`, `endpoint`, `runtime_grant`,
+`authentication`, `secret_handles`, `storage_grants`; it contains no incarnation
+or Run membership. Local-private Unix uses empty credential grants/secret handles.
+The common loader owns its 16 KiB bounded secure file/grant validation; the domain
+request remains separately bounded by the 1 MiB HTTP policy. The C++ shared loader
+API is not yet available, so `--bootstrap-input` is not yet an executable option
+in this product. Consumers must record that gate rather than claim integration
+or duplicate the loader, credential/grant parser, TLS or lease in Core/product.
 
 The transport uses one XRPC HTTP owner and one fixed domain worker. Native ROS
 input uses the existing fixed pool; publication uses one scheduler. Domain work
 belongs to directly callable native instance, rate and status functions. HTTP
 paths, methods, envelope fields and error status mapping live in the thin RPC
-adapter. Startup invokes native activation without dispatching an RPC. The
+adapter. Frozen-input projection is also a native function; startup activates no
+instances. The
 native executable owns both domain and transport lifetimes; its readiness and
 completion evidence come from actual native work.
 The native runtime library links without XRPC. Only the native executable links
@@ -97,9 +182,8 @@ identities, without headers, payloads, secrets or arbitrary metric labels.
 
 | Write class | Writer and location | Trigger and recovery |
 | --- | --- | --- |
-| Instance/rate state | Provider memory | Explicit configuration; discarded at process exit, restored only from an explicit supervisor document |
+| Instance/rate state | Provider memory | Explicit configuration; discarded at process exit, activated only by a subsequent explicit domain call |
 | Unix socket and lease | XRPC; supervisor-granted private 0700 runtime directory | Process bind/stop; lock is retained, only the owned socket inode is removed |
-| Bootstrap document | Supervisor; explicit read-only file grant | Provider reads at startup; supervisor owns retention/removal |
 | Robot descriptions/assets | Owning installed packages; read-only | Native URDF realization; the provider never rewrites packages |
 | ROS parameters | Provider on the selected ROS graph | Native activation/deletion; only an unchanged owned value is removed |
 | ROS caches and logs | ROS libraries; explicitly allocated `ROS_HOME`/`ROS_LOG_DIR` | Native lifecycle; deployment owns quota, log rotation and cache cleanup |
