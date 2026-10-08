@@ -67,6 +67,12 @@ int main(int argc,char** argv) {
         if(argument.empty()||argument.find(":=")==std::string::npos||
             (argument[0]=='_'&&argument.compare(0,2,"__")!=0))
           throw std::invalid_argument("product startup uses explicit --options; only ROS remappings may follow");
+        if(argument.compare(0,2,"__")==0) {
+          const auto name=argument.substr(0,argument.find(":="));
+          const std::vector<std::string> allowed{"__name","__ns","__master","__ip","__hostname"};
+          if(std::find(allowed.begin(),allowed.end(),name)==allowed.end())
+            throw std::invalid_argument("unsupported ROS startup override; log writes use allocated ROS_LOG_DIR");
+        }
         if(argument.compare(0,15,"/use_sim_time:=")==0)has_remap=true;
         arguments.push_back(argument);
       }

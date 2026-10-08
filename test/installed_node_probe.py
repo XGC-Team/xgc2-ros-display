@@ -403,7 +403,7 @@ def main(binary):
             require(not os.path.exists(probe_socket), 'owned RPC socket leaked')
             wait(lambda: all(p.get_num_connections() == 1 for p in source_pubs), 'server source subscriptions leaked')
             require(rospy.get_param('/foreign/visual_robot_description') == 'foreign-owned', 'Stop erased foreign parameter')
-            for arguments in (["_server_instance_id:=old"], ["--callback-workers", "0"],
+            for arguments in (["_server_instance_id:=old"], ["__log:=" + work + "/unallocated.log"], ["--callback-workers", "0"],
                               ["--world-clock", "guess"], ["--target-id", "duplicate"]):
                 rejected = subprocess.run([binary, '--socket', os.path.join(work, 'invalid.sock'),
                     '--target-id', 'private-probe'] + arguments, stdout=subprocess.PIPE,

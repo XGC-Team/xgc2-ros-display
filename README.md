@@ -28,6 +28,8 @@ and `--initial-instance-file`. The product reads no ROS master bootstrap
 parameters; private product parameter aliases are rejected. The clock is immutable
 and selected before ROS initialization; an existing `/use_sim_time` remap is
 preserved. Do not separately pass `_use_sim_time`.
+ROS name/namespace/master/IP remaps remain available; `__log` overrides are
+rejected so native log writes retain their supervisor-allocated location.
 
 ```sh
 rosrun xgc2_ros_visualizer xgc2_ros_visualizer_node \

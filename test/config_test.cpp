@@ -9,6 +9,8 @@
 #include <geometry_msgs/PoseArray.h>
 #include <gtest/gtest.h>
 #include <stdexcept>
+#include <sys/stat.h>
+#include <unistd.h>
 using namespace xgc2_ros_visualizer;
 TEST(Rates, CompleteRoundTripAndKindIsolation) {
   auto original=defaultRates();auto json=original.json();json["scout"]["path"]=2.5;
@@ -107,6 +109,14 @@ TEST(Bootstrap, RelayClassProjectionRejectsLegacyIndividualBudget) {
   value["displayRelays"][0]["maxRateHz"]=3;EXPECT_THROW(projectBootstrap(value),std::invalid_argument);value["displayRelays"][0].removeMember("maxRateHz");
   value["displayRelays"][0]["robotKind"]="scout";EXPECT_THROW(projectBootstrap(value),std::invalid_argument);
   EXPECT_NO_THROW(projectBootstrap(envelope()));value["context"]["worldClock"]="guess";EXPECT_THROW(projectBootstrap(value),std::invalid_argument);
+}
+TEST(Bootstrap, RejectsNonRegularFileWithoutBlockingOnFifoOpen) {
+  char pattern[]="/tmp/sol18-domain-file-XXXXXX";
+  const char* directory=::mkdtemp(pattern);ASSERT_NE(nullptr,directory);
+  const std::string path=std::string(directory)+"/configuration";
+  ASSERT_EQ(0,::mkfifo(path.c_str(),0600));
+  EXPECT_THROW(readBootstrap(path),std::invalid_argument);
+  EXPECT_EQ(0,::unlink(path.c_str()));EXPECT_EQ(0,::rmdir(directory));
 }
 TEST(InstanceConfig, InvalidSceneLabelNamespaceFailsBeforeActivation) {
   auto value=envelope();value["robots"].append(fullRobot("uav1"));auto request=projectBootstrap(value).request;

@@ -127,7 +127,7 @@ Bootstrap projectBootstrap(const Json::Value& value) {
   parseInstance(request);return result;
 }
 Bootstrap readBootstrap(const std::string& file) {
-  const int fd=open(file.c_str(),O_RDONLY|O_CLOEXEC|O_NOFOLLOW);
+  const int fd=open(file.c_str(),O_RDONLY|O_CLOEXEC|O_NOFOLLOW|O_NONBLOCK);
   if(fd<0)throw std::invalid_argument("cannot open initial_instance_file without following symlinks");
   struct Close{int fd;~Close(){close(fd);}}close_file{fd};struct stat metadata{};
   if(fstat(fd,&metadata)!=0||!S_ISREG(metadata.st_mode)||metadata.st_size<=0||metadata.st_size>1024*1024)throw std::invalid_argument("initial_instance_file must be a nonempty regular file <=1 MiB");
