@@ -218,14 +218,13 @@ class Instance::Impl {
     else { *forward=value.linear.x;*lateral=value.linear.y; }
   }
   void publishHistory(Robot& robot,const ros::Time& now,bool ar) {
-    SourceHistory snapshot;
-    {
-      std::lock_guard<std::mutex> lock(robot.input->mutex);
-      auto& history=ar?robot.input->ar_path:robot.input->path;
-      history.expire(now);snapshot=history;
-    }
     auto& revision=ar?robot.ar_path_revision:robot.path_revision;
-    if(revision==snapshot.revision)return;
+    std::unique_lock<std::mutex> lock(robot.input->mutex);
+    auto& history=ar?robot.input->ar_path:robot.input->path;
+    history.expire(now);
+    if(revision==history.revision)return;
+    const SourceHistory snapshot=history;
+    lock.unlock();
     auto& message=ar?robot.ar_path_message:robot.path_message;
     message.poses.resize(snapshot.size);message.header.stamp=snapshot.stamp;
     for(std::size_t i=0;i<snapshot.size;++i) {
