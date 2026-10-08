@@ -26,12 +26,11 @@ foreach(target xgc2_ros_visualizer_contract xgc2_ros_visualizer_runtime)
   target_compile_features(${target} PUBLIC cxx_std_14)
 endforeach()
 target_link_libraries(xgc2_ros_visualizer_contract PUBLIC ${catkin_LIBRARIES})
-target_link_libraries(xgc2_ros_visualizer_runtime PUBLIC xgc2_ros_visualizer_contract ${catkin_LIBRARIES}
-  PRIVATE xgc2_ros_visualizer_rpc)
+target_link_libraries(xgc2_ros_visualizer_runtime PUBLIC xgc2_ros_visualizer_contract ${catkin_LIBRARIES})
 add_dependencies(xgc2_ros_visualizer_contract ${catkin_EXPORTED_TARGETS})
 add_dependencies(xgc2_ros_visualizer_runtime ${catkin_EXPORTED_TARGETS})
-add_executable(xgc2_ros_visualizer_node src/main.cpp)
-target_link_libraries(xgc2_ros_visualizer_node PRIVATE xgc2_ros_visualizer_runtime)
+add_executable(xgc2_ros_visualizer_node src/main.cpp src/server/routes.cpp)
+target_link_libraries(xgc2_ros_visualizer_node PRIVATE xgc2_ros_visualizer_runtime xgc2_ros_visualizer_rpc)
 install(TARGETS xgc2_ros_visualizer_contract xgc2_ros_visualizer_runtime xgc2_ros_visualizer_node
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}

@@ -1,4 +1,5 @@
 #include "server/server.hpp"
+#include "server/routes.hpp"
 #include <xgc2_ros_visualizer/bootstrap.hpp>
 #include <ros/ros.h>
 #include <algorithm>
@@ -93,13 +94,16 @@ int main(int argc,char** argv) {
       throw std::invalid_argument("ROS clock remap conflicts with the explicit immutable world clock");
     std::signal(SIGINT,requestStop);std::signal(SIGTERM,requestStop);
     xgc2_ros_visualizer::Server server(rpc_options.instance_id,workers,rates,&stop_requested);
-    xgc2_ros_visualizer::RpcServer transport(socket,[&server](const std::string& method,const std::string& path,const Json::Value& body){return server.route(method,path,body);},std::move(rpc_options),[&server]{server.stop();});
+    xgc2_ros_visualizer::RpcServer transport(socket,[&server](const std::string& method,const std::string& path,const Json::Value& body){return xgc2_ros_visualizer::routeRpc(server,method,path,body);},std::move(rpc_options),[&server]{
+      try {server.stop();}
+      catch(...) {ros::shutdown();throw;}
+      ros::shutdown();
+    });
     if(!initial_file.empty()) {
       const auto initial=xgc2_ros_visualizer::readBootstrap(initial_file);
-      const auto reply=server.route("PUT","/v1/instances/"+initial.instance_id,initial.request);
-      if(reply.status!=200||!reply.body["ready"].asBool())
-        throw std::invalid_argument("initial instance rejected: "+xgc2_ros_visualizer::jsonText(reply.body));
+      const auto status=server.activateInstance(initial.instance_id,initial.request);
+      if(!status["ready"].asBool())throw std::runtime_error("initial native instance is not ready");
     }
-    transport.run(server.stopping());server.rethrowFailure();ros::shutdown();return 0;
+    transport.run(server.stopping());server.rethrowFailure();return 0;
   } catch(const std::exception& error) {std::cerr<<"visualizer server failed: "<<std::string(error.what()).substr(0,512)<<'\n';return 1;}
 }

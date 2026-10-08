@@ -59,13 +59,23 @@ from the startup document's Run-owned instance ID.
 
 The transport uses one XRPC HTTP owner and one fixed domain worker. Native ROS
 input uses the existing fixed pool; publication uses one scheduler. Domain work
+belongs to directly callable native instance, rate and status functions. HTTP
+paths, methods, envelope fields and error status mapping live in the thin RPC
+adapter. Startup invokes native activation without dispatching an RPC. The
+native executable owns both domain and transport lifetimes; its readiness and
+completion evidence come from actual native work.
+The native runtime library links without XRPC. Only the native executable links
+the adapter and shared XRPC transport; native data/function consumers remain
+C++14 and do not require transport headers or an RPC endpoint.
+Domain work
 never runs in the HTTP IO handler. The preallocated handoff is bounded by
 `HOST_MAX_IN_FLIGHT`, including active work. Expired or cancelled queued calls do
 not begin native work. Cancellation after dispatch does not roll back activation,
 rate application or deletion. The endpoint lease and admission remain retained
 until actual work is quiescent, including during shutdown. The host finishes its
-domain worker, stops the native publication scheduler and input pool, and fences
-owned output deletion before SDK drain can release the endpoint lease.
+domain worker, stops the native publication scheduler and input pool, fences
+owned output deletion and shuts down the native ROS graph before SDK drain can
+release the endpoint lease.
 A slow native operation
 can therefore outlive a caller or drain deadline; lease release never asserts
 that a cancelled operation has ended.

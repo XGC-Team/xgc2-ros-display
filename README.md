@@ -8,6 +8,10 @@ Robots, descriptions and relays are instance data. Adding robots does not create
 application threads, helper processes or `robot_state_publisher` children.
 Core uses its ordinary supervised process definition and a frozen startup file;
 normal Stop terminates that Run's server and removes its bootstrap file.
+The native application owns readiness, input/publication workers and the XRPC
+endpoint for that same lifetime. Its domain control functions own instance
+activation/removal, rate CAS and status data. The RPC adapter maps wire requests
+to those functions; startup calls the same native activation function directly.
 
 The separate `xgc2_robot_visualization` dependency supplies FS150, Scout and
 Mecanum geometry, wheel/rotor animation calculations, frame names and path
