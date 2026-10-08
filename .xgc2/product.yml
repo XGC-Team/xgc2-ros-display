@@ -40,5 +40,8 @@ release:
   ci_workflow: ci.yml
   dependency_policy:
     xgc2-robot-visualization: rebuild
+    xgc2-fs150-description: verify
+    xgc2-scout-description: verify
+    xgc2-mecanum-description: verify
   apt_versions:
     focal: 0.3.0-1~focal
