@@ -25,6 +25,8 @@ struct RpcOptions {
   std::string instance_id;
   std::string ros_home;
   std::string ros_log_dir;
+  // Borrowed resolved runtime-directory grant; the shared host duplicates it.
+  int retained_parent_fd{-1};
   std::vector<std::pair<std::string, std::string>> environment;
 };
 

@@ -1,8 +1,8 @@
 # Visualization v1
 
 The service is `xgc2.visualization`, API version `1`, profile `http.v1`.
-The process supervisor supplies `--socket`, `--target-id`, ROS graph settings,
-managed ROS cache/log directories. Startup creates no domain instances.
+The process supervisor supplies one `--bootstrap-input` file, ROS graph
+remaps and managed ROS cache/log directories. Startup creates no domain instances.
 The provider creates a fresh random incarnation on every process start. Product
 bootstrap is explicit native CLI input, never an inherited ROS master parameter;
 old private product parameter aliases are rejected.
@@ -123,23 +123,47 @@ and the retired CLI option fail startup. Consumers remove `bootstrapJson`,
 `bootstrapFile` and product-specific file materialization. Freeze the domain input
 once in the workflow, then pass it in the explicit PUT above.
 
-The current executable accepts required `--socket` and `--target-id`, optional
-`--callback-workers`, `--world-clock`, `--rates-json`, plus standard ROS remaps.
-Target is never defaulted to `local`; it is actually returned in ServiceRef.
-`ROS_HOME` and `ROS_LOG_DIR` require explicit absolute process-owner allocations.
-The world clock is immutable and must match `context.worldClock` on activation.
+The executable accepts one required `--bootstrap-input /explicit/path` plus
+standard ROS remaps. It consumes the common XRPC
+`contracts/bootstrap-input.schema.json` and `bootstrap.schema.json` through the
+shared C++ loader. The binding fixes `target_id`, `service`, `api_version`,
+`profile`, `endpoint`, `runtime_grant`, `authentication`, `secret_handles`,
+`storage_grants`; it contains no incarnation or Run membership. This native
+provider requires `xgc2.visualization`, API `"1"`, `http.v1`, Unix and
+`local_private`. Remote profiles fail explicitly before ROS initialization;
+there is no plaintext or local transport fallback. Local-private Unix uses
+empty credential grants and secret handles.
 
-The final common startup contract is XRPC `contracts/bootstrap-input.schema.json`
-and `bootstrap.schema.json`: one `--bootstrap-input /explicit/path` containing
-the binding and opaque native application startup settings. Its binding fixes
-`target_id`, `service`, `api_version`, `profile`, `endpoint`, `runtime_grant`,
-`authentication`, `secret_handles`, `storage_grants`; it contains no incarnation
-or Run membership. Local-private Unix uses empty credential grants/secret handles.
-The common loader owns its 16 KiB bounded secure file/grant validation; the domain
-request remains separately bounded by the 1 MiB HTTP policy. The C++ shared loader
-API is not yet available, so `--bootstrap-input` is not yet an executable option
-in this product. Consumers must record that gate rather than claim integration
-or duplicate the loader, credential/grant parser, TLS or lease in Core/product.
+The loader owns the 16 KiB bounded secure input read, shared identity/schema
+validation and grant resolution. The process owner's runtime grant resolves to
+the existing owned mode0700 endpoint parent, is validated against that parent
+inode and is passed to the shared HTTP host as a retained descriptor. No
+product/Core directory creation, chmod, lease or credential parser is added.
+The domain request remains separately bounded by the 1 MiB HTTP policy.
+
+The opaque `application` is a native settings object with only these fields:
+
+| Field | Native meaning |
+| --- | --- |
+| `rosHomeGrant` | Required opaque name matching one declared storage grant; resolves to the existing owned `ROS_HOME` directory |
+| `rosLogGrant` | Required distinct opaque name matching the other storage grant; resolves to the existing owned `ROS_LOG_DIR` directory |
+| `callbackWorkers` | Optional immutable integer1–32, default2; existing shared ROS input pool |
+| `worldClock` | Optional immutable `wall` or `simulation`, default`wall`; must match activation's `context.worldClock` |
+| `rates` | Optional partial kind/channel object overlaying native defaults, default`{}`; runtime PUT still requires the complete table |
+
+Both storage grants are resolved by the SDK before ROS starts and remain held
+through the native lifecycle. `ROS_HOME` and `ROS_LOG_DIR` are explicit absolute
+process-owner allocations; grant names are not paths. ROS libraries retain
+their native path-based writes, and the process supervisor owns quota/rotation.
+The provider creates no missing directory. Unknown application fields, missing
+or unresolved grants and invalid settings fail before native startup. Robots,
+Run IDs and display relays belong solely to the explicit domain PUT.
+`--socket`, `--target-id`, `--callback-workers`, `--world-clock` and `--rates-json`
+are retired rather than aliases or alternative authority.
+
+```json
+{"schema_version":1,"binding":{"schema_version":1,"target_id":"fixture:target","service":"xgc2.visualization","api_version":"1","profile":"http.v1","endpoint":{"kind":"unix","address":"/allocated/private/visualizer.sock"},"runtime_grant":"visualizer:runtime","authentication":"local_private","secret_handles":{},"storage_grants":["visualizer:ros-home","visualizer:ros-log"]},"grants":{},"application":{"rosHomeGrant":"visualizer:ros-home","rosLogGrant":"visualizer:ros-log","callbackWorkers":2,"worldClock":"simulation","rates":{}}}
+```
 
 The transport uses one XRPC HTTP owner and one fixed domain worker. Native ROS
 input uses the existing fixed pool; publication uses one scheduler. Domain work

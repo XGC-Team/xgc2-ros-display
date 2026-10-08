@@ -4,6 +4,7 @@
 #include <chrono>
 #include <memory>
 #include <future>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <thread>
 #include <unistd.h>
@@ -15,19 +16,20 @@ class RpcTransportTest : public ::testing::Test {
     char pattern[] = "/tmp/xgc2-viz-xrpc-XXXXXX";
     const char* directory = ::mkdtemp(pattern); ASSERT_NE(nullptr, directory);
     directory_ = directory; path_ = directory_ + "/control.sock";
+    directory_fd_=::open(directory_.c_str(),O_RDONLY|O_DIRECTORY|O_CLOEXEC); ASSERT_GE(directory_fd_,0);
   }
   void TearDown() override {
     if (server_) server_->stop();
     if (worker_.joinable()) worker_.join();
     client_.reset(); server_.reset();
-    ::unlink((path_ + ".xrpc.lock").c_str()); EXPECT_EQ(0, ::rmdir(directory_.c_str()));
+    ::unlink((path_ + ".xrpc.lock").c_str()); if(directory_fd_>=0)::close(directory_fd_); EXPECT_EQ(0, ::rmdir(directory_.c_str()));
   }
   void start(RpcHandler handler = {}, std::vector<std::pair<std::string,std::string>> environment = {}, std::function<void()> quiesce_native = {}) {
     if (!handler) handler = [this](const std::string& method, const std::string& path, const Json::Value& body) {
       ++calls_; Json::Value result; result["method"] = method; result["path"] = path; result["body"] = body;
       return RpcReply{path == "/missing" ? 404 : 200, result};
     };
-    RpcOptions options; options.target_id="test-target"; options.instance_id="test-incarnation"; options.environment=std::move(environment);
+    RpcOptions options;options.retained_parent_fd=directory_fd_; options.target_id="test-target"; options.instance_id="test-incarnation"; options.environment=std::move(environment);
     server_.reset(new RpcServer(path_, std::move(handler), std::move(options),std::move(quiesce_native)));
     client_.reset(new xgc2::xrpc::HttpClient(path_, {}, "test-incarnation"));
     worker_ = std::thread([this] { server_->run(stopping_); });
@@ -41,7 +43,7 @@ class RpcTransportTest : public ::testing::Test {
     const std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
     EXPECT_TRUE(reader->parse(response.body.data(), response.body.data() + response.body.size(), &result, &error)); return result;
   }
-  std::string directory_, path_;
+  std::string directory_, path_; int directory_fd_{-1};
   std::atomic<bool> stopping_{false}; std::atomic<int> calls_{0};
   std::unique_ptr<RpcServer> server_; std::unique_ptr<xgc2::xrpc::HttpClient> client_; std::thread worker_;
 };
@@ -100,7 +102,7 @@ TEST_F(RpcTransportTest, RejectsInvalidRuntimePolicyBeforeEndpointAdmission) {
   for(const auto& setting:std::vector<std::pair<std::string,std::string>>{
       {"XGC2_XRPC_HOST_MAX_CONNECTIONS","33"}, {"XGC2_XRPC_HOST_MAX_CONNECTIONS",""},
       {"XGC2_XRPC_LOG_QUEUE_BYTES","1024"}, {"XGC2_XRPC_UNDECLARED","1"}}) {
-    RpcOptions options;options.target_id="test-target";options.instance_id="test-instance";options.environment.push_back(setting);
+    RpcOptions options;options.retained_parent_fd=directory_fd_;options.target_id="test-target";options.instance_id="test-instance";options.environment.push_back(setting);
     EXPECT_THROW(RpcServer(path_,[](const std::string&,const std::string&,const Json::Value&){return RpcReply{200,{}};},options),std::exception);
     EXPECT_NE(0,::access(path_.c_str(),F_OK));
   }
@@ -131,7 +133,7 @@ TEST_F(RpcTransportTest, StopRetainsLeaseUntilNativeWorkReallyEnds) {
   auto active=std::async(std::launch::async,[&]{try{exchange("PUT","/entities","{}");}catch(const std::exception&){};});
   EXPECT_EQ(std::future_status::ready,entered.get_future().wait_for(seconds(1)));
   server_->stop();
-  RpcOptions options;options.target_id="test-target";options.instance_id="replacement";
+  RpcOptions options;options.retained_parent_fd=directory_fd_;options.target_id="test-target";options.instance_id="replacement";
   EXPECT_THROW(RpcServer(path_,[](const std::string&,const std::string&,const Json::Value&){return RpcReply{200,{}};},options),std::exception);
   release.set_value();active.get();worker_.join();server_.reset();
   EXPECT_NE(0,::access(path_.c_str(),F_OK));
@@ -172,7 +174,7 @@ TEST_F(RpcTransportTest, LeaseAlsoFencesNativeOwnerQuiescenceAfterCallsEnd) {
   start({}, {}, [&,unlocked]{++native_stops;entered.set_value();unlocked.wait_for(seconds(3));});
   server_->stop();
   EXPECT_EQ(std::future_status::ready,entered.get_future().wait_for(seconds(1)));
-  RpcOptions options;options.target_id="test-target";options.instance_id="replacement";
+  RpcOptions options;options.retained_parent_fd=directory_fd_;options.target_id="test-target";options.instance_id="replacement";
   EXPECT_THROW(RpcServer(path_,[](const std::string&,const std::string&,const Json::Value&){return RpcReply{200,{}};},options),std::exception);
   release.set_value();worker_.join();server_.reset();
   EXPECT_EQ(1,native_stops.load());EXPECT_NE(0,::access(path_.c_str(),F_OK));

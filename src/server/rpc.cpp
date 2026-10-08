@@ -101,7 +101,7 @@ class RpcServer::Impl {
         quiesce_native_(std::move(quiesce_native)),
         host_(socketOptions(path), [this](HttpRequest request, HttpReply reply) {
           dispatch(std::move(request), std::move(reply));
-        }, limits_, HttpIdentity{options.instance_id, {"/v1/describe"}}) {
+        }, limits_, HttpIdentity{options.instance_id, {"/v1/describe"}}, options.retained_parent_fd) {
     if (!handler_) throw std::invalid_argument("RPC handler is required");
     static const std::regex target("^[A-Za-z0-9_.:-]{1,128}$");
     if (!std::regex_match(options.target_id, target))

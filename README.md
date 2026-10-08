@@ -25,12 +25,16 @@ planning, map production and Viewer rendering remain their owning products.
 
 Source a ROS Noetic environment and select its master/IP normally. The
 supervisor supplies allocated `ROS_HOME` and `ROS_LOG_DIR` locations for native
-cache/log ownership. Required
-process options are `--socket` (a socket path in a supervisor-granted private
-0700 runtime directory) and `--target-id`. The provider creates its incarnation.
-Optional options are `--callback-workers` (1–32), `--rates-json` (an object
-overlaying defaults), `--world-clock` (`wall` or `simulation`, default `wall`)
-without a domain startup file. `--initial-instance-file` is retired and rejected.
+cache/log ownership. The native process accepts one required
+`--bootstrap-input` path plus standard ROS remaps. The shared XRPC loader reads
+that owned mode0600 file under an existing owned mode0700 parent and validates
+its bounded binding/grants. The binding selects the target and private Unix
+endpoint; the provider creates its incarnation. Its `application` requires
+`rosHomeGrant` and `rosLogGrant` naming the two declared storage grants. Optional
+`callbackWorkers` (1–32, default2), `worldClock` (`wall` or `simulation`, default
+`wall`) and `rates` (a partial object overlaying defaults) remain native settings.
+Startup creates no Run membership. Old socket/target/worker/clock/rate flags and
+`--initial-instance-file` are rejected; none is another startup authority.
 The product reads no ROS master bootstrap
 parameters; private product parameter aliases are rejected. The clock is immutable
 and selected before ROS initialization; an existing `/use_sim_time` remap is
@@ -40,8 +44,7 @@ rejected so native log writes retain their supervisor-allocated location.
 
 ```sh
 rosrun xgc2_ros_visualizer xgc2_ros_visualizer_node \
-  --socket "$XGC_RUNTIME_DIR/visualizer.sock" --target-id local-agent \
-  --world-clock simulation
+  --bootstrap-input "$XGC_RUNTIME_DIR/visualizer-bootstrap.json"
 curl --unix-socket "$XGC_RUNTIME_DIR/visualizer.sock" \
   -H 'X-Request-ID: discover-1' -H 'X-Xrpc-Timeout-Ms: 3000' \
   http://localhost/v1/describe
@@ -91,8 +94,8 @@ scene-model binding are preserved. Unrelated panel fields remain Viewer-owned.
 Optional `settings.publication` has boolean `markers`, `transforms`, `scene`,
 `scenePaths`, `paths`, `groundScene` for explicit native publication control.
 Native internal projected configuration remains directly callable data, and is
-not an alternate RPC wire format. The final shared `--bootstrap-input` loader is
-an open C++ SDK gate; the current product does not claim to implement it.
+not an alternate RPC wire format. The process root consumes the shared
+`--bootstrap-input` loader before ROS starts; Run activation remains explicit.
 
 Instances cannot share the existing global scene/frame outputs on the same ROS
 graph. Independent relay-only instances can disable scene/transforms and use

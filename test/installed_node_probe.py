@@ -152,10 +152,24 @@ def main(binary, catalog_path=None):
                           ROS_LOG_DIR=os.path.join(work, 'roslog'))
         os.environ.pop('ROS_HOSTNAME', None)
         allocations = dict(socketPath=probe_socket, targetId='private-probe',
-            callbackWorkers=2, ratesJson='{}', worldClock='simulation',
+            callbackWorkers=2, rates={'fs150': {'path': 5}}, worldClock='simulation',
+            rosHomeGrant='probe:ros-home', rosLogGrant='probe:ros-log',
             rosMasterUri=master_uri, rosIp='127.0.0.1', rosHome=work,
-            rosLogDir=os.path.join(work, 'roslog'))
+            rosLogDir=os.path.join(work, 'roslog'), bootstrapInput=os.path.join(work, 'bootstrap.json'))
         os.makedirs(allocations['rosLogDir'], mode=0o700)
+        bootstrap_document = dict(schema_version=1, binding=dict(schema_version=1,
+            target_id=allocations['targetId'], service='xgc2.visualization', api_version='1',
+            profile='http.v1', endpoint=dict(kind='unix', address=probe_socket),
+            runtime_grant='probe:runtime', authentication='local_private', secret_handles={},
+            storage_grants=[allocations['rosHomeGrant'], allocations['rosLogGrant']]), grants={},
+            application=dict(rosHomeGrant=allocations['rosHomeGrant'], rosLogGrant=allocations['rosLogGrant'],
+                callbackWorkers=allocations['callbackWorkers'], worldClock=allocations['worldClock'],
+                rates=allocations['rates']))
+        def write_bootstrap(path, document):
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_CLOEXEC, 0o600)
+            with os.fdopen(descriptor, 'w') as stream:
+                json.dump(document, stream)
+        write_bootstrap(allocations['bootstrapInput'], bootstrap_document)
         logfile = open(os.path.join(work, 'process.log'), 'w')
         processes = []
         def launch_provider():
@@ -166,8 +180,7 @@ def main(binary, catalog_path=None):
                         name: environment[name] for name in catalog.definition['command']['env']}),
                     sort_keys=True), flush=True)
             else:
-                argv = [binary, '--socket', probe_socket, '--target-id', 'private-probe',
-                    '--callback-workers', '2', '--world-clock', 'simulation',
+                argv = [binary, '--bootstrap-input', allocations['bootstrapInput'],
                     '/use_sim_time:=/xgc2_ros_visualizer/use_sim_time']
                 environment = None
             provider = subprocess.Popen(argv, env=environment, stdout=logfile,
@@ -289,6 +302,9 @@ def main(binary, catalog_path=None):
             rpc('GET', '/v1/instances/explicit-zero', expected=404)
             baseline = resources(server.pid)
             default_rates = rpc('GET', '/v1/rates')['rates']
+            require(default_rates['fs150']['path'] == 5, 'native startup partial rates overlay lost')
+            rpc('PUT', '/v1/rates', {'fs150': {'path': 7}}, 400)
+            require(rpc('GET', '/v1/rates')['rates'] == default_rates, 'partial runtime PUT changed rates')
             original_revision = rate_revision
             rpc('PUT', '/v1/rates', default_rates, 400, wrap_rates=False)
             require(rate_revision == original_revision, 'retired flat rate body mutated state')
@@ -492,19 +508,50 @@ def main(binary, catalog_path=None):
             require(not os.path.exists(probe_socket), 'owned RPC socket leaked')
             wait(lambda: all(p.get_num_connections() == 1 for p in source_pubs), 'server source subscriptions leaked')
             require(rospy.get_param('/foreign/visual_robot_description') == 'foreign-owned', 'Stop erased foreign parameter')
-            for arguments in (["_server_instance_id:=old"], ["__log:=" + work + "/unallocated.log"], ["--callback-workers", "0"],
-                              ["--world-clock", "guess"], ["--target-id", "duplicate"],
-                              ["--initial-instance-file", retired_initial]):
-                rejected = subprocess.run([binary, '--socket', os.path.join(work, 'invalid.sock'),
-                    '--target-id', 'private-probe'] + arguments, stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE, timeout=3)
-                require(rejected.returncode != 0 and not os.path.exists(os.path.join(work, 'invalid.sock')),
+            def reject_startup(arguments, environment=None, message=None):
+                rejected = subprocess.run([binary] + arguments, env=environment,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3)
+                require(rejected.returncode != 0 and not os.path.exists(probe_socket),
                         'invalid/retired startup input created a provider')
+                if message:
+                    require(message in rejected.stderr.decode(), 'unexpected startup rejection reason')
+            base = ['--bootstrap-input', allocations['bootstrapInput']]
+            for arguments in (["_server_instance_id:=old"], ["__log:=" + work + "/unallocated.log"],
+                              ["--callback-workers", "2"], ["--world-clock", "wall"],
+                              ["--rates-json", "{}"], ["--target-id", "duplicate"],
+                              ["--socket", probe_socket], ["--bootstrap-input", allocations['bootstrapInput']],
+                              ["--initial-instance-file", retired_initial]):
+                reject_startup(base + arguments)
+            reject_startup([], message='--bootstrap-input is required')
             missing_allocation = dict(os.environ);missing_allocation.pop('ROS_HOME', None)
-            rejected = subprocess.run([binary, '--socket', os.path.join(work, 'invalid.sock'),
-                '--target-id', 'private-probe'], env=missing_allocation, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, timeout=3)
-            require(rejected.returncode != 0, 'missing cache allocation fell back to HOME')
+            reject_startup(base, environment=missing_allocation, message='ROS_HOME requires')
+            bad_input = os.path.join(work, 'invalid-bootstrap.json')
+            for change in (lambda d: d['binding'].update(service='other-domain'),
+                           lambda d: d['binding'].update(storage_grants=[]),
+                           lambda d: d['application'].update(rosLogGrant='unresolved'),
+                           lambda d: d['application'].update(callbackWorkers=0),
+                           lambda d: d['application'].update(worldClock='guess'),
+                           lambda d: d['application'].update(rates={'fs150': {'path': 0}}),
+                           lambda d: d['application'].update(robots=[])):
+                candidate = json.loads(json.dumps(bootstrap_document));change(candidate)
+                write_bootstrap(bad_input, candidate)
+                reject_startup(['--bootstrap-input', bad_input])
+            write_bootstrap(bad_input, bootstrap_document);os.chmod(bad_input, 0o644)
+            reject_startup(['--bootstrap-input', bad_input]);os.chmod(bad_input, 0o600)
+            with open(bad_input, 'w') as stream: stream.write(' ' * (16 * 1024 + 1))
+            reject_startup(['--bootstrap-input', bad_input])
+            symlink_input=os.path.join(work, 'symlink-bootstrap.json')
+            os.symlink(allocations['bootstrapInput'], symlink_input)
+            reject_startup(['--bootstrap-input', symlink_input])
+            fifo_input=os.path.join(work, 'fifo-bootstrap.json');os.mkfifo(fifo_input, 0o600)
+            reject_startup(['--bootstrap-input', fifo_input])
+            nonprivate_runtime=os.path.join(work, 'nonprivate-runtime');os.mkdir(nonprivate_runtime, 0o750)
+            candidate=json.loads(json.dumps(bootstrap_document))
+            candidate['binding']['endpoint']['address']=os.path.join(nonprivate_runtime, 'control.sock')
+            write_bootstrap(bad_input, candidate)
+            reject_startup(['--bootstrap-input', bad_input])
+            require(not os.path.exists(candidate['binding']['endpoint']['address']),
+                    'nonprivate runtime grant created an endpoint')
             # Stale master parameters and retired files cannot restore native membership.
             rospy.set_param('/xgc2_ros_visualizer/initial_instance_file', retired_initial)
             rospy.set_param('/xgc2_ros_visualizer/server_instance_id', 'old-provider')
@@ -590,6 +637,8 @@ def main(binary, catalog_path=None):
                 sigkill_stale_endpoint_recovered=True, crash_incarnation_fenced=True,
                 sigkill_native_relay_fenced=True, crash_relay_no_replay=True,
                 launch_source='catalog' if catalog else 'direct native fixture',
+                shared_bootstrap_loader=True, single_startup_binding=True,
+                startup_partial_rates=True, runtime_full_table_required=True,
                 catalog_sha256=catalog.sha256 if catalog else None,
                 no_child_processes=True), sort_keys=True))
             rospy.signal_shutdown('private probe complete')
