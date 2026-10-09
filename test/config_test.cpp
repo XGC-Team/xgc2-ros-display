@@ -72,13 +72,13 @@ Json::Value fullRobot(const std::string& name,const std::string& kind="px4_multi
   return result;
 }
 Json::Value envelope() {
-  return parseJson("{\"robots\":[],\"context\":{\"runMode\":\"simulation\",\"worldClock\":\"simulation\",\"worldBoundary\":null,\"scene\":{\"simulator\":\"xsim\"},\"localizationOffset\":{\"x\":1,\"y\":2,\"z\":3}},\"settings\":{},\"displayRelays\":[]}");
+  return parseJson("{\"robots\":[],\"context\":{\"runMode\":\"simulation\",\"worldBoundary\":null,\"scene\":{\"simulator\":\"xsim\"},\"localizationOffset\":{\"x\":1,\"y\":2,\"z\":3}},\"settings\":{},\"displayRelays\":[]}");
 }
 TEST(InstanceInput, FrozenModeSourceOffsetAndNumericPaletteParity) {
   auto value=envelope();value["robots"].append(fullRobot("uav10"));value["robots"].append(fullRobot("uav2"));
   value["settings"]["uavPalette"]=parseJson("[\"#ABCDEF\",\"#123456\"]");
   for(const auto& mode:{"simulation","physical","hybrid"}) {
-    value["context"]["runMode"]=mode;const auto projected=projectInstanceInput(value);
+    value["context"]["runMode"]=mode;const auto projected=projectInstanceInput(value,true);
     const auto& rows=projected["robots"];
     ASSERT_EQ(rows.size(),2U);EXPECT_EQ(rows[0]["name"],"uav10");EXPECT_EQ(rows[0]["heightProjectionColor"],"#123456");
     EXPECT_EQ(rows[1]["heightProjectionColor"],"#abcdef");
@@ -86,22 +86,22 @@ TEST(InstanceInput, FrozenModeSourceOffsetAndNumericPaletteParity) {
     EXPECT_DOUBLE_EQ(rows[1]["worldOffset"][2].asDouble(),std::string(mode)=="physical"?3:0);
     EXPECT_EQ(projected["descriptions"][1]["worldOffset"][2],0.0);
   }
-  value["robots"][0].removeMember("hybridSource");EXPECT_THROW(projectInstanceInput(value),std::invalid_argument);
+  value["robots"][0].removeMember("hybridSource");EXPECT_THROW(projectInstanceInput(value,true),std::invalid_argument);
   value["robots"][0]["hybridSource"]="physical";
-  auto physical=projectInstanceInput(value);EXPECT_EQ(physical["robots"][0]["arPoseTopic"],"/vrpn_client_node_physical/measured_uav10/pose");
+  auto physical=projectInstanceInput(value,true);EXPECT_EQ(physical["robots"][0]["arPoseTopic"],"/vrpn_client_node_physical/measured_uav10/pose");
   EXPECT_DOUBLE_EQ(physical["robots"][0]["worldOffset"][2].asDouble(),3);
   value["context"]["runMode"]="simulation";value["context"]["scene"]["simulator"]="gazebo";
-  auto gazebo=projectInstanceInput(value);EXPECT_EQ(gazebo["robots"][0]["arPoseTopic"],"/vrpn_client_node/uav10/pose");
+  auto gazebo=projectInstanceInput(value,true);EXPECT_EQ(gazebo["robots"][0]["arPoseTopic"],"/vrpn_client_node/uav10/pose");
   EXPECT_DOUBLE_EQ(gazebo["robots"][0]["worldOffset"][2].asDouble(),0);
   value["context"]["runMode"]="physical";value["context"]["localizationOffset"]["z"]="invalid";
-  EXPECT_THROW(projectInstanceInput(value),std::invalid_argument);
+  EXPECT_THROW(projectInstanceInput(value,true),std::invalid_argument);
 }
 TEST(InstanceInput, HeightOffScoutBindingAndDescriptionOnlyArePreserved) {
   auto value=envelope();value["settings"]["uavHeightProjection"]=false;value["robots"].append(fullRobot("uav1"));
   auto a=fullRobot("ugv2","scout_mini","scout");a["scout"]["mocapRigidBodyName"]="different";value["robots"].append(a);
   auto b=fullRobot("uav3","scout_mini","scout");b["scout"]["mocapRigidBodyName"]="rigid";value["robots"].append(b);
   value["robots"].append(fullRobot("description_only","other",""));
-  auto projected=projectInstanceInput(value);EXPECT_EQ(projected["descriptions"].size(),4U);EXPECT_EQ(projected["robots"].size(),3U);
+  auto projected=projectInstanceInput(value,true);EXPECT_EQ(projected["descriptions"].size(),4U);EXPECT_EQ(projected["robots"].size(),3U);
   EXPECT_EQ(projected["robots"][1]["sceneModel"],"rigid");EXPECT_FALSE(projected["robots"][0].isMember("heightProjectionColor"));
   EXPECT_EQ(projected["robots"][2]["sceneModel"],"ugv2");
   // Existing canonical rosters may also include the non-scene description row.
@@ -110,34 +110,34 @@ TEST(InstanceInput, HeightOffScoutBindingAndDescriptionOnlyArePreserved) {
 TEST(InstanceInput, RelayClassProjectionRejectsLegacyIndividualBudget) {
   auto value=envelope();value["robots"].append(fullRobot("uav1"));
   value["displayRelays"]=parseJson("[{\"source\":\"/uav1/path\",\"topic\":\"/xgc/display/uav1/path\",\"messageType\":\"nav_msgs/Path\"},{\"source\":\"/map\",\"topic\":\"/xgc/display/map\",\"messageType\":\"nav_msgs/OccupancyGrid\"}]");
-  const auto result=projectInstanceInput(value);EXPECT_EQ(result["displayRelays"][0]["robotKind"],"fs150");
+  const auto result=projectInstanceInput(value,true);EXPECT_EQ(result["displayRelays"][0]["robotKind"],"fs150");
   EXPECT_EQ(result["displayRelays"][1]["robotKind"],"global");EXPECT_FALSE(result["displayRelays"][0].isMember("maxRateHz"));
-  value["displayRelays"][0]["maxRateHz"]=3;EXPECT_THROW(projectInstanceInput(value),std::invalid_argument);value["displayRelays"][0].removeMember("maxRateHz");
-  value["displayRelays"][0]["robotKind"]="scout";EXPECT_THROW(projectInstanceInput(value),std::invalid_argument);
-  EXPECT_NO_THROW(projectInstanceInput(envelope()));value["context"]["worldClock"]="guess";EXPECT_THROW(projectInstanceInput(value),std::invalid_argument);
+  value["displayRelays"][0]["maxRateHz"]=3;EXPECT_THROW(projectInstanceInput(value,true),std::invalid_argument);value["displayRelays"][0].removeMember("maxRateHz");
+  value["displayRelays"][0]["robotKind"]="scout";EXPECT_THROW(projectInstanceInput(value,true),std::invalid_argument);
+  EXPECT_NO_THROW(projectInstanceInput(envelope(),true));EXPECT_FALSE(projectInstanceInput(envelope(),false)["settings"]["use_sim_time"].asBool());
 }
 TEST(InstanceInput, RejectsRetiredEnvelopeAndValidatesPublicationControls) {
   auto value=envelope();value["instanceId"]="old";
-  EXPECT_THROW(projectInstanceInput(value),std::invalid_argument);value.removeMember("instanceId");
+  EXPECT_THROW(projectInstanceInput(value,true),std::invalid_argument);value.removeMember("instanceId");
   value["descriptions"]=Json::Value(Json::arrayValue);
-  EXPECT_THROW(projectInstanceInput(value),std::invalid_argument);value.removeMember("descriptions");
+  EXPECT_THROW(projectInstanceInput(value,true),std::invalid_argument);value.removeMember("descriptions");
   value["settings"]["publication"]["scene"]=false;
   value["settings"]["publication"]["transforms"]=false;
   value["settings"]["publication"]["groundScene"]=false;
-  auto projected=projectInstanceInput(value);
+  auto projected=projectInstanceInput(value,true);
   EXPECT_FALSE(projected["settings"]["publish_scene_update"].asBool());
   EXPECT_FALSE(projected["settings"]["publish_transforms"].asBool());
   EXPECT_FALSE(projected["settings"]["track_ugv"].asBool());
   value["settings"]["publication"]["scene"]="false";
-  EXPECT_THROW(projectInstanceInput(value),std::invalid_argument);
+  EXPECT_THROW(projectInstanceInput(value,true),std::invalid_argument);
   value["settings"]["publication"]["scene"]=false;
   value["settings"]["publication"]["alias"]=false;
-  EXPECT_THROW(projectInstanceInput(value),std::invalid_argument);
+  EXPECT_THROW(projectInstanceInput(value,true),std::invalid_argument);
 }
 TEST(InstanceConfig, InvalidSceneLabelNamespaceFailsBeforeActivation) {
-  auto value=envelope();value["robots"].append(fullRobot("uav1"));auto request=projectInstanceInput(value);
+  auto value=envelope();value["robots"].append(fullRobot("uav1"));auto request=projectInstanceInput(value,true);
   request["robots"][0]["namespace"]="/bad_slot";EXPECT_THROW(parseInstance(request),std::invalid_argument);
-  value["robots"][0]["namespace"]="/bad_slot";EXPECT_THROW(projectInstanceInput(value),std::invalid_argument);
+  value["robots"][0]["namespace"]="/bad_slot";EXPECT_THROW(projectInstanceInput(value,true),std::invalid_argument);
 }
 TEST(SourceHistory, ExactOwningSdkSamplingRollbackAndExpirySemantics) {
   SourceHistory ring;xgc2_robot_visualization::BoundedPathRuntime sdk("world",{});geometry_msgs::Pose pose;pose.orientation.w=1;

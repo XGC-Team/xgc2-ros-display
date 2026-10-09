@@ -36,9 +36,10 @@ TEST(RVizLayout, RejectsDuplicateMembershipAndMixedTransformTrees) {
                std::invalid_argument);
 }
 
-TEST(RVizLayout, RequiresExplicitFrozenClock) {
+TEST(RVizLayout, ClockBelongsToNativeRunMode) {
   auto value = input();
-  value["context"].removeMember("worldClock");
-  EXPECT_THROW(xgc2_ros_visualizer::prepareRvizLayout(value),
-               std::invalid_argument);
+  value["context"]["runMode"] = "hybrid";
+  EXPECT_EQ(xgc2_ros_visualizer::prepareRvizLayout(value)["worldClock"].asString(), "wall");
+  value["context"]["runMode"] = "physical";
+  EXPECT_EQ(xgc2_ros_visualizer::prepareRvizLayout(value)["worldClock"].asString(), "wall");
 }

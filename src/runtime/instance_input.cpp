@@ -82,19 +82,18 @@ std::string heightColor(const Json::Value& settings,const Json::Value& robot,con
   return palette[static_cast<std::size_t>(found-peers.begin())%palette.size()];
 }
 }
-Json::Value projectInstanceInput(const Json::Value& value) {
+Json::Value projectInstanceInput(const Json::Value& value,bool simulation_clock) {
   if(!value.isObject())throw std::invalid_argument("instance input must be an object");
   const std::set<std::string> fields{"robots","context","settings","displayRelays"};auto keys=value.getMemberNames();
   if(std::set<std::string>(keys.begin(),keys.end())!=fields)throw std::invalid_argument("instance input requires exactly robots/context/settings/displayRelays");
   static const std::regex ns("^/[A-Za-z_][A-Za-z0-9_]{0,126}$");
   const auto& context=value["context"];const auto& panel=value["settings"];
   if(!context.isObject()||!panel.isObject()||!value["robots"].isArray()||value["robots"].size()>256)throw std::invalid_argument("instance context/settings/robots types are invalid");
-  const auto mode=text(context["runMode"],"context.runMode"),clock=text(context["worldClock"],"context.worldClock");
+  const auto mode=text(context["runMode"],"context.runMode");
   if(mode!="simulation"&&mode!="physical"&&mode!="hybrid")throw std::invalid_argument("invalid frozen runMode");
-  if(clock!="simulation"&&clock!="wall")throw std::invalid_argument("invalid frozen worldClock");
   Json::Value request;request["robots"]=Json::Value(Json::arrayValue);request["descriptions"]=Json::Value(Json::arrayValue);request["displayRelays"]=Json::Value(Json::arrayValue);
   request["worldBoundary"]=context["worldBoundary"];auto& settings=request["settings"];
-  settings["frame_id"]="world";settings["use_sim_time"]=clock=="simulation";
+  settings["frame_id"]="world";settings["use_sim_time"]=simulation_clock;
   settings["publish_markers"]=false;settings["publish_transforms"]=true;settings["publish_scene_update"]=true;settings["publish_scene_paths"]=false;settings["publish_paths"]=true;
   // Publication controls are product data, independent of the frozen Viewer
   // style/context fields. This preserves explicit relay-only and ground-scene

@@ -130,15 +130,13 @@ Json::Value prepareRvizLayout(const Json::Value &input) {
   const auto &settings = input["parameters"];
   const auto &context = input["context"];
   const auto frame = settings["fixedFrame"].asString(),
-             mode = context["runMode"].asString(),
-             clock = context["worldClock"].asString();
+             mode = context["runMode"].asString();
   const std::regex identifier("^[A-Za-z_][A-Za-z0-9_]*$"),
       topic("^/[A-Za-z_][A-Za-z0-9_]*(/[A-Za-z_][A-Za-z0-9_]*)*$");
   require(std::regex_match(frame, identifier), "invalid fixed frame");
   require(mode == "simulation" || mode == "physical" || mode == "hybrid",
           "invalid frozen runMode");
-  require(clock == "simulation" || clock == "wall",
-          "invalid frozen worldClock");
+  const std::string clock = mode == "simulation" ? "simulation" : "wall";
   require(!input["robots"].empty() && input["robots"].size() <= 256,
           "RViz requires 1..256 robots");
   std::vector<Json::Value> robots;

@@ -4,8 +4,7 @@
     "cameraImageTopic": "/xgc/camera/world/image_raw"
   },
   "context": {
-    "runMode": "simulation",
-    "worldClock": "simulation"
+    "runMode": "simulation"
   },
   "robots": [
     {

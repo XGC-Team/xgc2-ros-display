@@ -112,6 +112,6 @@ Json::Value Server::activateInstance(const std::string& id,const Json::Value& co
 }
 Json::Value Server::activateFrozenInstance(const std::string& id,const Json::Value& input) {
   requireRunning();validateInstanceId(id);
-  return activateInstance(id,projectInstanceInput(input));
+  return activateInstance(id,projectInstanceInput(input,ros::Time::isSimTime()));
 }
 } // namespace xgc2_ros_visualizer

@@ -74,7 +74,7 @@ def robot(name, ar=False):
 
 def instance(count=0, relays=None, scene=True):
     rows = [robot('uav%d' % (i + 1), i == 0) for i in range(count)]
-    return dict(robots=rows, context=dict(runMode='hybrid', worldClock='simulation', worldBoundary=None, scene=dict(simulator='xsim'), localizationOffset=dict(x=1, y=2, z=3)),
+    return dict(robots=rows, context=dict(runMode='hybrid', worldBoundary=None, scene=dict(simulator='xsim'), localizationOffset=dict(x=1, y=2, z=3)),
                 settings=dict(publication=dict(transforms=scene, scene=scene, markers=scene,
                                                scenePaths=scene, paths=scene)), displayRelays=relays or [])
 
@@ -246,7 +246,7 @@ def main(binary, catalog_path=None):
             retired_initial = os.path.join(work, 'retired-input.json')
             with open(retired_initial, 'w') as stream:
                 json.dump(dict(instanceId='old-initial', robots=[], context=dict(
-                    runMode='simulation', worldClock='simulation', worldBoundary=None, scene=dict(simulator='xsim'), localizationOffset=dict(x=1, y=2, z=3)),
+                    runMode='simulation', worldBoundary=None, scene=dict(simulator='xsim'), localizationOffset=dict(x=1, y=2, z=3)),
                     settings={}, displayRelays=[]), stream)
             server = launch_provider()
             wait(lambda: os.path.exists(probe_socket) or server.poll() is not None,
@@ -260,7 +260,7 @@ def main(binary, catalog_path=None):
             require(rpc('GET', '/v1/health')['callbackWorkers'] == 2, 'wrong input pool size')
             require(rpc('GET', '/v1/status')['instanceCount'] == 0, 'startup implicitly activated an instance')
             legacy = dict(instanceId='old', robots=[], context=dict(runMode='simulation',
-                worldClock='simulation', worldBoundary=None), settings={}, displayRelays=[])
+                worldBoundary=None), settings={}, displayRelays=[])
             rpc('PUT', '/v1/instances/retired-input', legacy, 400)
             projected = dict(robots=[], descriptions=[], worldBoundary=None, settings={}, displayRelays=[])
             rpc('PUT', '/v1/instances/retired-input', projected, 400)
