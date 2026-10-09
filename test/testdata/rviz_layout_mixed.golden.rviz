@@ -1,0 +1,114 @@
+Panels:
+  - Class: rviz/Displays
+    Name: Displays
+    Property Tree Widget:
+      Expanded: ~
+      Splitter Ratio: 0.5
+Preferences:
+  PromptSaveOnExit: false
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Alpha: 0.5
+      Cell Size: 1
+      Class: rviz/Grid
+      Color: 160; 160; 160
+      Enabled: true
+      Name: Grid
+      Plane: XY
+      Plane Cell Count: 10
+      Reference Frame: <Fixed Frame>
+      Value: true
+    - Class: rviz/TF
+      Enabled: true
+      Frame Timeout: 15
+      Marker Scale: 1
+      Name: TF
+      Show Arrows: true
+      Show Axes: true
+      Show Names: true
+      Tree: {}
+      Update Interval: 0
+      Value: true
+    - Alpha: 1
+      Class: rviz/RobotModel
+      Collision Enabled: false
+      Enabled: true
+      Name: scout_beta RobotModel
+      Robot Description: /scout_beta/visual_robot_description
+      TF Prefix: xgc/robots/field_scout
+      Update Interval: 0
+      Visual Enabled: true
+      Value: true
+    - Alpha: 1
+      Buffer Length: 1
+      Class: rviz/Path
+      Color: 203; 171; 1
+      Enabled: true
+      Head Diameter: 0.3
+      Head Length: 0.2
+      Length: 0.3
+      Line Style: Lines
+      Line Width: 0.04
+      Name: scout_beta Path
+      Pose Style: None
+      Queue Size: 10
+      Topic: /scout_beta/history/path
+      Value: true
+    - Alpha: 1
+      Class: rviz/RobotModel
+      Collision Enabled: false
+      Enabled: true
+      Name: uav_alpha RobotModel
+      Robot Description: /uav_alpha/visual_robot_description
+      TF Prefix: xgc/robots/uav_alpha
+      Update Interval: 0
+      Visual Enabled: true
+      Value: true
+    - Alpha: 1
+      Buffer Length: 1
+      Class: rviz/Path
+      Color: 242; 0; 60
+      Enabled: true
+      Head Diameter: 0.3
+      Head Length: 0.2
+      Length: 0.3
+      Line Style: Lines
+      Line Width: 0.03
+      Name: uav_alpha Path
+      Pose Style: None
+      Queue Size: 10
+      Topic: /uav_alpha/path
+      Value: true
+    - Class: rviz/Image
+      Enabled: true
+      Image Topic: /xgc/camera/world/image_raw
+      Max Value: 1
+      Median window: 5
+      Min Value: 0
+      Name: Camera Image
+      Normalize Range: true
+      Queue Size: 2
+      Transport Hint: raw
+      Unreliable: false
+      Value: true
+  Enabled: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Default Light: true
+    Fixed Frame: world
+    Frame Rate: 30
+  Name: xgc-rviz:scout_beta,uav_alpha
+  Tools:
+    - Class: rviz/MoveCamera
+    - Class: rviz/Select
+    - Class: rviz/FocusCamera
+  Value: true
+  Views:
+    Current:
+      Class: rviz/Orbit
+      Distance: 16
+      Focal Point: {X: 2, Y: 1, Z: 0.7905}
+      Name: Current View
+      Target Frame: <Fixed Frame>
+    Saved: ~

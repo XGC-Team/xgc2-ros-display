@@ -1,0 +1,48 @@
+{
+  "parameters": {
+    "fixedFrame": "world",
+    "cameraImageTopic": "/xgc/camera/world/image_raw"
+  },
+  "context": {
+    "runMode": "simulation",
+    "worldClock": "simulation"
+  },
+  "robots": [
+    {
+      "namespace": "/uav_alpha",
+      "kind": "px4_multirotor",
+      "initialPose": {
+        "x": 6,
+        "y": -1,
+        "z": 1.4,
+        "yaw": 0.25
+      },
+      "visualization": {
+        "sceneClass": "fs150",
+        "sceneModel": "",
+        "pathTopic": "path",
+        "descriptionPackage": "robot_description",
+        "visuals": [],
+        "pathLineWidthMeters": 0.03
+      }
+    },
+    {
+      "namespace": "/scout_beta",
+      "kind": "scout_mini",
+      "initialPose": {
+        "x": -2,
+        "y": 3,
+        "z": 0.181,
+        "yaw": 1.2
+      },
+      "visualization": {
+        "sceneClass": "scout",
+        "sceneModel": "field_scout",
+        "pathTopic": "history/path",
+        "descriptionPackage": "robot_description",
+        "visuals": [],
+        "pathLineWidthMeters": 0.04
+      }
+    }
+  ]
+}
