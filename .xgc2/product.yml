@@ -1,7 +1,7 @@
 schema: xgc2.product.v1
 id: xgc2-ros-visualizer
 name: XGC2 ROS Visualizer
-version: 0.4.0-4
+version: 0.4.0-5
 kind: ros1-apt
 summary: Single-process ROS visualization server with dynamic owned instances and kind/channel publication rates.
 ros:
@@ -39,6 +39,8 @@ release:
   ref: main
   workflow: release.yml
   ci_workflow: ci.yml
+  requires:
+  - xgc2-xrpc
   dependency_policy:
     xgc2-xrpc: rebuild
     xgc2-robot-visualization: rebuild
@@ -46,4 +48,4 @@ release:
     xgc2-scout-description: verify
     xgc2-mecanum-description: verify
   apt_versions:
-    focal: 0.4.0-4~focal
+    focal: 0.4.0-5~focal
