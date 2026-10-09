@@ -67,14 +67,14 @@ def robot(name, ar=False):
                 visualization=dict(sceneClass='fs150', sceneModel=name,
                     descriptionPackage='fs150_description', descriptionFile='urdf/fs150_visual.urdf',
                     robotStatePublisher=False, jointStateTopic='joint_states', pathTopic='path'),
-                localizationSources=dict(simulation=dict(poseTopic='/raw/' + name if ar else
-                    '/' + name + '/mavros/local_position/pose',
-                    offset=dict(x=1 if ar else 0, y=2 if ar else 0, z=3 if ar else 0))))
+                hybridSource='physical' if ar else 'simulation', profileId='px4-multirotor.physical.vrpn',
+                px4=dict(mocapRigidBodyName=name),
+                simulationPoseTopic='/raw/' + name if ar else '/' + name + '/mavros/local_position/pose')
 
 
 def instance(count=0, relays=None, scene=True):
     rows = [robot('uav%d' % (i + 1), i == 0) for i in range(count)]
-    return dict(robots=rows, context=dict(runMode='simulation', worldClock='simulation', worldBoundary=None),
+    return dict(robots=rows, context=dict(runMode='hybrid', worldClock='simulation', worldBoundary=None, scene=dict(simulator='xsim'), localizationOffset=dict(x=1, y=2, z=3)),
                 settings=dict(publication=dict(transforms=scene, scene=scene, markers=scene,
                                                scenePaths=scene, paths=scene)), displayRelays=relays or [])
 
@@ -246,7 +246,7 @@ def main(binary, catalog_path=None):
             retired_initial = os.path.join(work, 'retired-input.json')
             with open(retired_initial, 'w') as stream:
                 json.dump(dict(instanceId='old-initial', robots=[], context=dict(
-                    runMode='simulation', worldClock='simulation', worldBoundary=None),
+                    runMode='simulation', worldClock='simulation', worldBoundary=None, scene=dict(simulator='xsim'), localizationOffset=dict(x=1, y=2, z=3)),
                     settings={}, displayRelays=[]), stream)
             server = launch_provider()
             wait(lambda: os.path.exists(probe_socket) or server.poll() is not None,
@@ -395,7 +395,7 @@ def main(binary, catalog_path=None):
                 return subscriptions
             observers = observe()
             pose_pubs = [rospy.Publisher('/uav%d/mavros/local_position/pose' % (i + 1), PoseStamped, queue_size=1) for i in range(100)]
-            ar_pub = rospy.Publisher('/raw/uav1', PoseStamped, queue_size=1)
+            ar_pub = rospy.Publisher('/vrpn_client_node_physical/uav1/pose', PoseStamped, queue_size=1)
             rpc('PUT', '/v1/instances/robots20', instance(20))
             wait(lambda: all(p.get_num_connections() for p in pose_pubs[:20]), '20 robot inputs missing')
             pump(.7, pose_pubs[:20], ar_pub)

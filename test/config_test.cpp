@@ -66,14 +66,13 @@ Json::Value fullRobot(const std::string& name,const std::string& kind="px4_multi
   auto& visual=result["visualization"];visual["sceneClass"]=scene;visual["descriptionPackage"]="fs150_description";
   visual["descriptionFile"]="urdf/fs150_visual.urdf";visual["robotStatePublisher"]=false;
   visual["jointStateTopic"]="joint_states";visual["pathTopic"]="path";
-  for(const auto& mode:{"simulation","physical","hybrid"}) {
-    auto& source=result["localizationSources"][mode];source["poseTopic"]="/frozen/"+std::string(mode)+"/"+name;
-    source["twistTopic"]="/unused/twist";source["offset"]["x"]=1.0;source["offset"]["y"]=2.0;source["offset"]["z"]=3.0;
-  }
+  result["hybridSource"]="simulation";result["profileId"]="px4-multirotor.physical.vrpn";
+  result["px4"]["mocapRigidBodyName"]="measured_"+name;
+  result["simulationPoseTopic"]="/frozen/simulation/"+name;
   return result;
 }
 Json::Value envelope() {
-  return parseJson("{\"robots\":[],\"context\":{\"runMode\":\"simulation\",\"worldClock\":\"simulation\",\"worldBoundary\":null},\"settings\":{},\"displayRelays\":[]}");
+  return parseJson("{\"robots\":[],\"context\":{\"runMode\":\"simulation\",\"worldClock\":\"simulation\",\"worldBoundary\":null,\"scene\":{\"simulator\":\"xsim\"},\"localizationOffset\":{\"x\":1,\"y\":2,\"z\":3}},\"settings\":{},\"displayRelays\":[]}");
 }
 TEST(InstanceInput, FrozenModeSourceOffsetAndNumericPaletteParity) {
   auto value=envelope();value["robots"].append(fullRobot("uav10"));value["robots"].append(fullRobot("uav2"));
@@ -82,11 +81,20 @@ TEST(InstanceInput, FrozenModeSourceOffsetAndNumericPaletteParity) {
     value["context"]["runMode"]=mode;const auto projected=projectInstanceInput(value);
     const auto& rows=projected["robots"];
     ASSERT_EQ(rows.size(),2U);EXPECT_EQ(rows[0]["name"],"uav10");EXPECT_EQ(rows[0]["heightProjectionColor"],"#123456");
-    EXPECT_EQ(rows[1]["heightProjectionColor"],"#abcdef");EXPECT_EQ(rows[1]["arPoseTopic"],"/frozen/"+std::string(mode)+"/uav2");
-    EXPECT_DOUBLE_EQ(rows[1]["worldOffset"][2].asDouble(),3);
+    EXPECT_EQ(rows[1]["heightProjectionColor"],"#abcdef");
+    EXPECT_EQ(rows[1]["arPoseTopic"],std::string(mode)=="physical"?"/vrpn_client_node/measured_uav2/pose":"/frozen/simulation/uav2");
+    EXPECT_DOUBLE_EQ(rows[1]["worldOffset"][2].asDouble(),std::string(mode)=="physical"?3:0);
     EXPECT_EQ(projected["descriptions"][1]["worldOffset"][2],0.0);
   }
-  value["robots"][0]["localizationSources"].removeMember("hybrid");EXPECT_THROW(projectInstanceInput(value),std::invalid_argument);
+  value["robots"][0].removeMember("hybridSource");EXPECT_THROW(projectInstanceInput(value),std::invalid_argument);
+  value["robots"][0]["hybridSource"]="physical";
+  auto physical=projectInstanceInput(value);EXPECT_EQ(physical["robots"][0]["arPoseTopic"],"/vrpn_client_node_physical/measured_uav10/pose");
+  EXPECT_DOUBLE_EQ(physical["robots"][0]["worldOffset"][2].asDouble(),3);
+  value["context"]["runMode"]="simulation";value["context"]["scene"]["simulator"]="gazebo";
+  auto gazebo=projectInstanceInput(value);EXPECT_EQ(gazebo["robots"][0]["arPoseTopic"],"/vrpn_client_node/uav10/pose");
+  EXPECT_DOUBLE_EQ(gazebo["robots"][0]["worldOffset"][2].asDouble(),0);
+  value["context"]["runMode"]="physical";value["context"]["localizationOffset"]["z"]="invalid";
+  EXPECT_THROW(projectInstanceInput(value),std::invalid_argument);
 }
 TEST(InstanceInput, HeightOffScoutBindingAndDescriptionOnlyArePreserved) {
   auto value=envelope();value["settings"]["uavHeightProjection"]=false;value["robots"].append(fullRobot("uav1"));

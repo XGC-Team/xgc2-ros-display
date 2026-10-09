@@ -86,10 +86,11 @@ After native startup and ServiceRef discovery, the explicit bound PUT body is:
 session context, and `settings` the entry's full camel-case panel settings.
 The server projects these values and creates the instance through the same
 validated registry path as RPC. Namespace, scene model and installed description
-metadata come from each Robot's visualization configuration. FS150 AR uses only
-`localizationSources[context.runMode].poseTopic` and its frozen offset. Missing
-selected sources reject activation; no VRPN/profile/topic guessing or second offset
-application occurs. Numeric slot palette ordering and the original Scout mocap
+metadata come from each Robot's visualization configuration. The native FS150 AR
+projection selects the frozen member's physical or simulation source, resolves
+its pose topic and applies `context.localizationOffset` only to raw motion capture.
+Direct xsim coordinates already include that offset. Core forwards the frozen
+facts without calculating a per-mode topic table. Numeric slot palette ordering and the original Scout mocap
 scene-model binding are preserved. Unrelated panel fields remain Viewer-owned.
 Optional `settings.publication` has boolean `markers`, `transforms`, `scene`,
 `scenePaths`, `paths`, `groundScene` for explicit native publication control.

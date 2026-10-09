@@ -23,6 +23,41 @@ std::string trim(std::string value) {
   const auto first=value.find_first_not_of(" \t\r\n");if(first==std::string::npos)return "";
   return value.substr(first,value.find_last_not_of(" \t\r\n")-first+1);
 }
+void arSource(Json::Value& description, const Json::Value& robot,
+              const Json::Value& context) {
+  const auto mode = text(context["runMode"], "context.runMode");
+  const auto source = mode == "hybrid" ? text(robot["hybridSource"], "Robot hybridSource") : mode;
+  if (source != "physical" && source != "simulation")
+    throw std::invalid_argument("AR requires an explicit physical or simulation source");
+  const auto space = robot["namespace"].asString();
+  const bool rotor = robot["profileId"] == "px4.mocap-rotor.ros1.v1";
+  const auto simulator = source == "simulation" && !rotor
+      ? text(context["scene"]["simulator"], "context.scene.simulator") : "";
+  if (source == "simulation" && !rotor && simulator != "xsim" && simulator != "gazebo")
+    throw std::invalid_argument("AR requires an explicit supported simulator");
+  const bool direct = simulator == "xsim";
+  description["arPathTopic"] = "ar_path";
+  if (direct) {
+    const auto authored = optionalText(robot["simulationPoseTopic"], "simulationPoseTopic");
+    description["arPoseTopic"] = authored.empty() ? space + "/pose" : authored;
+    return;
+  }
+  const auto body = source == "physical" || rotor
+      ? text(robot["px4"]["mocapRigidBodyName"], "px4.mocapRigidBodyName") : space.substr(1);
+  if (body.empty() || body.find('/') != std::string::npos)
+    throw std::invalid_argument("AR requires a single rigid body name");
+  description["arPoseTopic"] = "/vrpn_client_node" +
+      (mode == "hybrid" ? "_" + source : "") + "/" + body + "/pose";
+  if (source == "physical" || rotor) {
+    const auto& offset = context["localizationOffset"];
+    for (int i = 0; i < 3; ++i) {
+      const auto& v = offset[i == 0 ? "x" : i == 1 ? "y" : "z"];
+      if (!v.isNumeric() || v.isBool() || !std::isfinite(v.asDouble()))
+        throw std::invalid_argument("AR localization offset must be finite");
+      description["worldOffset"][i] = v;
+    }
+  }
+}
 long slotNumber(const std::string& name) {
   std::size_t first=name.size();while(first>0&&std::isdigit(static_cast<unsigned char>(name[first-1])))--first;
   if(first==name.size())return 0;
@@ -113,11 +148,7 @@ Json::Value projectInstanceInput(const Json::Value& value) {
     if(scene_class.empty())continue;
     const std::size_t index=scene_class=="fs150"?0:scene_class=="scout"?1:2;models[index].push_back(description["sceneModel"].asString());
     if(scene_class=="fs150") {
-      const auto& source=robot["localizationSources"][mode];
-      if(!source.isObject())throw std::invalid_argument("FS150 AR requires frozen localizationSources for the selected runMode");
-      description["arPoseTopic"]=text(source["poseTopic"],"localization poseTopic");description["arPathTopic"]="ar_path";
-      const auto& offset=source["offset"];if(!offset.isObject())throw std::invalid_argument("localization offset is required");
-      for(int i=0;i<3;++i) {const char* coordinate=i==0?"x":i==1?"y":"z";const auto& v=offset[coordinate];if(!v.isNumeric()||v.isBool()||!std::isfinite(v.asDouble()))throw std::invalid_argument("localization offset must be finite");description["worldOffset"][i]=v;}
+      arSource(description, robot, context);
       if(flag(panel["uavHeightProjection"],true,"uavHeightProjection"))description["heightProjectionColor"]=heightColor(panel,robot,ordered);
     }
     request["robots"].append(description);
