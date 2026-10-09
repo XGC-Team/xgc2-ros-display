@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-image=ghcr.io/xgc-team/xgc2-images/xgc2-build-focal-full-noetic:1.0.0@sha256:2d0ab240a669e59dc6e86e41806041a7f5d46751c787b5cbb225b10e1faed39b
-cxx=""
+image=ghcr.io/xgc-team/xgc2-images/xgc2-build-focal-full-noetic:1.0.8@sha256:fce2d76fddf4f6439bf0a188249b731650febdc163befc360bed186b269d252a
+cxx="clang++-10"
 work_dir=""
 output_dir=""
 while [[ $# -gt 0 ]]; do
