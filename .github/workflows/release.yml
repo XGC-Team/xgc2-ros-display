@@ -51,7 +51,7 @@ jobs:
           case "$PREPARE_ACTION" in release|compatibility-verify) ;; *) exit 1 ;; esac
           [[ -z "$DEPENDENCY_SET_DIGEST" || "$DEPENDENCY_SET_DIGEST" =~ ^[0-9a-f]{64}$ ]]
           [[ -z "$APT_OVERLAY_URL" || "$DEPENDENCY_SET_DIGEST" =~ ^[0-9a-f]{64}$ ]]
-          # The build installs the published robot visualization dependency in its private container.
+          # The build installs robot description assets and XRPC in its private container.
   build:
     needs: prepare-contract
     name: package-tests-debs-${{ matrix.name }}

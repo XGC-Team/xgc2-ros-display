@@ -9,10 +9,10 @@
 #include <condition_variable>
 #include <mutex>
 #include <stdexcept>
-#include <xgc2_robot_visualization/fs150_uav_visualizer.hpp>
-#include <xgc2_robot_visualization/scout_ugv_visualizer.hpp>
-#include <xgc2_robot_visualization/mecanum_ugv_visualizer.hpp>
-#include <xgc2_robot_visualization/robot_frames.hpp>
+#include <render/robots/fs150_uav_visualizer.hpp>
+#include <render/robots/scout_ugv_visualizer.hpp>
+#include <render/robots/mecanum_ugv_visualizer.hpp>
+#include <render/robots/robot_frames.hpp>
 #include <geometry_msgs/PoseStamped.h>
 #include <geometry_msgs/TwistStamped.h>
 #include <mavros_msgs/State.h>
@@ -80,7 +80,7 @@ foxglove_msgs::SceneEntityDeletion deletion(const std::string& id,const ros::Tim
 class Instance::Impl {
  public:
   struct Robot {
-    xgc2_robot_visualization::RobotDescription identity;
+    xgc2_ros_visualizer::RobotDescription identity;
     RobotModelKind model_kind;
     RateKind kind;
     std::shared_ptr<RobotInput> input{new RobotInput};
@@ -96,16 +96,16 @@ class Instance::Impl {
   };
   Impl(std::string name,InstanceConfig cfg) : id(std::move(name)),config(std::move(cfg)) {
     const auto& s=config.settings;
-    xgc2_robot_visualization::Fs150UavVisualizer::Config u; u.frame_id=s.frame_id;u.mesh_scale=s.uav_mesh_scale;
-    uav.reset(new xgc2_robot_visualization::Fs150UavVisualizer(u));
-    xgc2_robot_visualization::ScoutUgvVisualizer::Config g;g.frame_id=s.frame_id;g.mesh_scale=s.scout_mesh_scale;
+    xgc2_ros_visualizer::Fs150UavVisualizer::Config u; u.frame_id=s.frame_id;u.mesh_scale=s.uav_mesh_scale;
+    uav.reset(new xgc2_ros_visualizer::Fs150UavVisualizer(u));
+    xgc2_ros_visualizer::ScoutUgvVisualizer::Config g;g.frame_id=s.frame_id;g.mesh_scale=s.scout_mesh_scale;
     g.visual_wheel_radius=s.wheel_radius;g.visual_track_width=s.track_width;g.wheel_motion_deadband=s.wheel_deadband;g.max_visual_wheel_speed_rad_s=s.wheel_max_speed;
-    scout.reset(new xgc2_robot_visualization::ScoutUgvVisualizer(g));
-    xgc2_robot_visualization::MecanumUgvVisualizer::Config m;m.frame_id=s.frame_id;m.mesh_scale=s.mecanum_mesh_scale;
-    mecanum.reset(new xgc2_robot_visualization::MecanumUgvVisualizer(m));
-    xgc2_robot_visualization::Fs150UavVisualizer path_uav(u);
-    xgc2_robot_visualization::ScoutUgvVisualizer path_scout(g);
-    xgc2_robot_visualization::MecanumUgvVisualizer path_mecanum(m);
+    scout.reset(new xgc2_ros_visualizer::ScoutUgvVisualizer(g));
+    xgc2_ros_visualizer::MecanumUgvVisualizer::Config m;m.frame_id=s.frame_id;m.mesh_scale=s.mecanum_mesh_scale;
+    mecanum.reset(new xgc2_ros_visualizer::MecanumUgvVisualizer(m));
+    xgc2_ros_visualizer::Fs150UavVisualizer path_uav(u);
+    xgc2_ros_visualizer::ScoutUgvVisualizer path_scout(g);
+    xgc2_ros_visualizer::MecanumUgvVisualizer path_mecanum(m);
     robots.reserve(config.robots.size());
     for (const auto& identity:config.robots) {
       if (identity.scene_model.empty()) continue;
@@ -116,19 +116,19 @@ class Instance::Impl {
         robot->path_message.header.frame_id=s.frame_id;robot->ar_path_message.header.frame_id=s.frame_id;
         robot->path_message.poses.reserve(61);robot->ar_path_message.poses.reserve(61);
       }
-      // Extract exact SDK path metadata in cold configuration without advancing
+      // Extract exact robot path metadata in cold configuration without advancing
       // running animation state. Runtime points come from the source-time ring.
       visualization_msgs::MarkerArray prototypes;
       for(unsigned sample=0;sample<2;++sample) {
         prototypes.markers.clear();const auto stamp=ros::Time(1+sample);
         if(robot->model_kind==RobotModelKind::kFs150) {
-          xgc2_robot_visualization::UavVisualState state;state.name=identity.scene_model;state.stamp=stamp;state.pose.orientation.w=1;
+          xgc2_ros_visualizer::UavVisualState state;state.name=identity.scene_model;state.stamp=stamp;state.pose.orientation.w=1;
           path_uav.append(state,&prototypes,nullptr,false,true,false);
         } else if(robot->model_kind==RobotModelKind::kScout) {
-          xgc2_robot_visualization::UgvVisualState state;state.name=identity.scene_model;state.stamp=stamp;state.pose.orientation.w=1;
+          xgc2_ros_visualizer::UgvVisualState state;state.name=identity.scene_model;state.stamp=stamp;state.pose.orientation.w=1;
           path_scout.append(state,&prototypes,nullptr,false,true,false);
         } else {
-          xgc2_robot_visualization::MecanumVisualState state;state.name=identity.scene_model;state.stamp=stamp;state.pose.orientation.w=1;
+          xgc2_ros_visualizer::MecanumVisualState state;state.name=identity.scene_model;state.stamp=stamp;state.pose.orientation.w=1;
           path_mecanum.append(state,&prototypes,nullptr,false,true,false);
         }
       }
@@ -234,11 +234,11 @@ class Instance::Impl {
     (ar?robot.ar_path_pub:robot.path_pub).publish(message);revision=snapshot.revision;
     counted(robot.kind,ar?Channel::ArPath:Channel::Path);
   }
-  void appendSdk(Robot& robot,const RobotState& sample,const CanonicalWorldPose& pose,const ros::Time& now,bool mesh,bool path,bool label,bool joint) {
+  void appendRobotVisuals(Robot& robot,const RobotState& sample,const CanonicalWorldPose& pose,const ros::Time& now,bool mesh,bool path,bool label,bool joint) {
     scratch.markers.clear();scratch_tf.clear();const auto& s=config.settings;
     auto* marker_output=(mesh||path||label)?&scratch:nullptr;auto* tf_output=joint?&scratch_tf:nullptr;
     if(robot.model_kind==RobotModelKind::kFs150) {
-      xgc2_robot_visualization::UavVisualState state;state.name=robot.identity.scene_model;state.pose=pose.pose;state.stamp=now;
+      xgc2_ros_visualizer::UavVisualState state;state.name=robot.identity.scene_model;state.pose=pose.pose;state.stamp=now;
       state.rotors_active=sample.state_available&&sample.armed&&fresh(sample.state_stamp,now,s.state_timeout);
       state.rotor_speed_rad_s=s.rotor_airborne;
       if(sample.extended_available&&fresh(sample.extended_stamp,now,s.state_timeout)) {
@@ -249,10 +249,10 @@ class Instance::Impl {
     } else {
       double forward,lateral,angular;bool hint;motion(sample,pose.pose,now,&forward,&lateral,&angular,&hint);
       if(robot.model_kind==RobotModelKind::kMecanum) {
-        xgc2_robot_visualization::MecanumVisualState state;state.name=robot.identity.scene_model;state.pose=pose.pose;state.stamp=now;state.has_motion_hint=hint;state.forward_velocity_m_s=forward;state.lateral_velocity_m_s=lateral;state.yaw_rate_rad_s=angular;
+        xgc2_ros_visualizer::MecanumVisualState state;state.name=robot.identity.scene_model;state.pose=pose.pose;state.stamp=now;state.has_motion_hint=hint;state.forward_velocity_m_s=forward;state.lateral_velocity_m_s=lateral;state.yaw_rate_rad_s=angular;
         mecanum->append(state,marker_output,tf_output,mesh,false,label);
       } else {
-        xgc2_robot_visualization::UgvVisualState state;state.name=robot.identity.scene_model;state.pose=pose.pose;state.stamp=now;state.has_motion_hint=hint;state.forward_velocity_m_s=forward;state.yaw_rate_rad_s=angular;
+        xgc2_ros_visualizer::UgvVisualState state;state.name=robot.identity.scene_model;state.pose=pose.pose;state.stamp=now;state.has_motion_hint=hint;state.forward_velocity_m_s=forward;state.yaw_rate_rad_s=angular;
         scout->append(state,marker_output,tf_output,mesh,false,label);
       }
     }
@@ -263,7 +263,7 @@ class Instance::Impl {
         std::lock_guard<std::mutex> lock(robot.input->mutex);
         robot.input->path.expire(now);history=robot.input->path;
       }
-      // Preserve SDK IDs/style/frame and its two-point visibility threshold.
+      // Preserve robot marker IDs/style/frame and its two-point visibility threshold.
       if(history.size>=2) {
         auto& marker=robot.path_marker;marker.points.resize(history.size);marker.header.stamp=history.stamp;
         for(std::size_t i=0;i<history.size;++i)marker.points[i]=history.at(i).pose.position;
@@ -295,9 +295,9 @@ class Instance::Impl {
   std::vector<std::unique_ptr<Robot>> robots;
   std::vector<std::unique_ptr<Description>> descriptions;
   std::vector<std::unique_ptr<Relay>> relays;
-  std::unique_ptr<xgc2_robot_visualization::Fs150UavVisualizer> uav;
-  std::unique_ptr<xgc2_robot_visualization::ScoutUgvVisualizer> scout;
-  std::unique_ptr<xgc2_robot_visualization::MecanumUgvVisualizer> mecanum;
+  std::unique_ptr<xgc2_ros_visualizer::Fs150UavVisualizer> uav;
+  std::unique_ptr<xgc2_ros_visualizer::ScoutUgvVisualizer> scout;
+  std::unique_ptr<xgc2_ros_visualizer::MecanumUgvVisualizer> mecanum;
   std::atomic<bool> active{false};std::atomic<unsigned> in_flight{0};
   std::mutex completion_mutex;std::condition_variable completion;
   Gate gates[kKindCount][kChannelCount];
@@ -401,7 +401,7 @@ void Instance::tick(const Rates& rates,const ros::Time& now) {
       }
     }
     if(p.scene_ar_pub&&ar_pose.found&&!robot.ar_label_sent&&due(Channel::ArIdentity)) {
-      p.scratch.markers.clear();p.scratch.markers.push_back(identityLabelMarker(robot.identity.scene_model,xgc2_robot_visualization::robotFramePrefix(robot.identity.scene_model)+"/label_ar",ar_pose.stamp));
+      p.scratch.markers.clear();p.scratch.markers.push_back(identityLabelMarker(robot.identity.scene_model,xgc2_ros_visualizer::robotFramePrefix(robot.identity.scene_model)+"/label_ar",ar_pose.stamp));
       applyRobotMarkerLabel(&p.scratch,0,robot.model_kind,robot.identity.ros_namespace);
       foxglove_msgs::SceneUpdate update;appendSceneEntityPart(robot.model_kind,robot.identity.name,SceneEntityPart::kArLabel,p.scratch,0,ar_pose.stamp,s.frame_id,s.label_style,&update);
       if(!update.entities.empty()) {p.ar_labels[robot.identity.scene_model]=std::move(update.entities.front());robot.ar_label_sent=true;p.scene_ar.entities.push_back(p.ar_labels[robot.identity.scene_model]);p.counted(robot.kind,Channel::ArIdentity);}
@@ -412,7 +412,7 @@ void Instance::tick(const Rates& rates,const ros::Time& now) {
     const bool label=p.scene_pub&&due(Channel::Scene)&&(!robot.label_sent||s.publish_scene_paths);
     const bool path=p.scene_pub&&s.publish_scene_paths&&due(Channel::ScenePath);
     if(markers||joint||label||path) {
-      p.appendSdk(robot,sample,pose,now,markers,markers||path,markers||label,joint);
+      p.appendRobotVisuals(robot,sample,pose,now,markers,markers||path,markers||label,joint);
       if(markers) {for(const auto& m:p.scratch.markers)p.marker_ids.emplace(m.ns,m.id);p.markers.markers.insert(p.markers.markers.end(),p.scratch.markers.begin(),p.scratch.markers.end());p.counted(robot.kind,Channel::Markers);}
       if(joint) p.counted(robot.kind,Channel::JointTf);
       if(path) {appendSceneEntityPart(robot.model_kind,robot.identity.name,SceneEntityPart::kPath,p.scratch,0,now,s.frame_id,s.label_style,&p.scene);p.counted(robot.kind,Channel::ScenePath);}

@@ -7,7 +7,8 @@
   <depend>roscpp</depend><depend>roslib</depend><depend>urdf</depend>
   <depend>sensor_msgs</depend><depend>nav_msgs</depend><depend>geometry_msgs</depend>
   <depend>foxglove_msgs</depend><depend>mavros_msgs</depend><depend>std_msgs</depend>
-  <depend>tf2_ros</depend><depend>visualization_msgs</depend><depend>xgc2_robot_visualization</depend>
+  <depend>tf2_ros</depend><depend>visualization_msgs</depend>
+  <build_depend>fs150_description</build_depend>
   <exec_depend>fs150_description</exec_depend><exec_depend>scout_description</exec_depend>
   <exec_depend>mecanum_description</exec_depend>
   <build_depend>libxgc2-xrpc-dev</build_depend><exec_depend>libxgc2-xrpc1</exec_depend>

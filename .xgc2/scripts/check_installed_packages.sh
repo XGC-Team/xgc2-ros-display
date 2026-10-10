@@ -7,7 +7,7 @@ expected="$(awk '/^version:/ {print $2; exit}' "$repo_root/.xgc2/product.yml")~f
 test "$(dpkg-query -W -f='${db:Status-Status}' "$package")" = installed
 test "$(dpkg-query -W -f='${Version}' "$package")" = "$expected"
 test "$(rospack find xgc2_ros_visualizer)" = "$prefix/share/xgc2_ros_visualizer"
-for path in lib/libxgc2_ros_visualizer_runtime.so lib/libxgc2_ros_visualizer_contract.so lib/pkgconfig/xgc2_ros_visualizer.pc include/xgc2_ros_visualizer/config.hpp include/xgc2_ros_visualizer/declared_wire.hpp include/xgc2_ros_visualizer/scene_contract.hpp share/xgc2_ros_visualizer/cmake/xgc2_ros_visualizerConfig.cmake; do
+for path in lib/libxgc2_ros_visualizer_runtime.so lib/libxgc2_ros_visualizer_contract.so lib/pkgconfig/xgc2_ros_visualizer.pc include/xgc2_ros_visualizer/config.hpp include/xgc2_ros_visualizer/robot_roster.hpp include/xgc2_ros_visualizer/declared_wire.hpp include/xgc2_ros_visualizer/scene_contract.hpp share/xgc2_ros_visualizer/cmake/xgc2_ros_visualizerConfig.cmake; do
   test -s "$prefix/$path"
 done
 binary="$prefix/lib/xgc2_ros_visualizer/xgc2_ros_visualizer_node"
@@ -15,6 +15,10 @@ test -x "$binary"
 for path in "$binary" "$prefix/lib/libxgc2_ros_visualizer_runtime.so" "$prefix/lib/libxgc2_ros_visualizer_contract.so"; do
   linkage="$(ldd "$path")"
   [[ "$linkage" != *'not found'* ]]
+  if printf '%s\n' "$linkage" | grep -Eq 'lib(fs150_uav_visualizer|scout_ugv_visualizer|mecanum_ugv_visualizer|robot_description_runtime|robot_path_runtime)\.so'; then
+    echo "Retired robot visualization library remains linked: $path" >&2
+    exit 1
+  fi
 done
 consumer="$(mktemp -d)"
 trap 'rm -rf "$consumer"' EXIT

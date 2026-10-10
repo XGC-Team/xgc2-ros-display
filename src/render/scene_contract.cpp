@@ -24,8 +24,8 @@
 #include <std_msgs/ColorRGBA.h>
 #include <visualization_msgs/Marker.h>
 
-#include "xgc2_robot_visualization/path_history.hpp"
-#include "xgc2_robot_visualization/robot_frames.hpp"
+#include "render/robots/path_history.hpp"
+#include "render/robots/robot_frames.hpp"
 
 namespace xgc2_ros_visualizer {
 namespace {
@@ -66,10 +66,10 @@ geometry_msgs::Pose copyPose(const geometry_msgs::Pose& source) {
 // still flattens separately.
 double slotDisplayBodyZ(RobotModelKind kind, double pose_z) {
     if (kind == RobotModelKind::kScout) {
-        return xgc2_robot_visualization::scoutDisplayBodyZ();
+        return xgc2_ros_visualizer::scoutDisplayBodyZ();
     }
     if (kind == RobotModelKind::kMecanum) {
-        return xgc2_robot_visualization::mecanumDisplayBodyZ();
+        return xgc2_ros_visualizer::mecanumDisplayBodyZ();
     }
     return pose_z;
 }
@@ -603,7 +603,7 @@ std::string slotVisualizationPoseTopic(RobotModelKind kind, const std::string& r
 
 geometry_msgs::Pose slotHistoryPathPose(RobotModelKind kind, geometry_msgs::Pose world_pose) {
     if (kind == RobotModelKind::kScout || kind == RobotModelKind::kMecanum) {
-        return xgc2_robot_visualization::flattenGroundVehicleHistoryPose(world_pose);
+        return xgc2_ros_visualizer::flattenGroundVehicleHistoryPose(world_pose);
     }
     return world_pose;
 }
@@ -638,7 +638,7 @@ canonicalRobotPoseTransforms(RobotModelKind kind, const std::string& scene_model
     geometry_msgs::TransformStamped body;
     body.header.stamp = stamp;
     body.header.frame_id = frame_id;
-    body.child_frame_id = xgc2_robot_visualization::robotBodyFrame(scene_model);
+    body.child_frame_id = xgc2_ros_visualizer::robotBodyFrame(scene_model);
     body.transform.translation.x = pose.position.x;
     body.transform.translation.y = pose.position.y;
     body.transform.translation.z = body_z;
@@ -646,7 +646,7 @@ canonicalRobotPoseTransforms(RobotModelKind kind, const std::string& scene_model
 
     geometry_msgs::TransformStamped label;
     label.header = body.header;
-    label.child_frame_id = xgc2_robot_visualization::robotLabelFrame(scene_model);
+    label.child_frame_id = xgc2_ros_visualizer::robotLabelFrame(scene_model);
     label.transform.translation.x = pose.position.x;
     label.transform.translation.y = pose.position.y;
     label.transform.translation.z = body_z + label_height;
@@ -679,7 +679,7 @@ geometry_msgs::TransformStamped canonicalArIdentityLabelTransform(
     geometry_msgs::TransformStamped label;
     label.header.stamp = stamp;
     label.header.frame_id = frame_id;
-    label.child_frame_id = xgc2_robot_visualization::robotFramePrefix(scene_model) + "/label_ar";
+    label.child_frame_id = xgc2_ros_visualizer::robotFramePrefix(scene_model) + "/label_ar";
     label.transform.translation.x = pose.position.x;
     label.transform.translation.y = pose.position.y;
     label.transform.translation.z =

@@ -15,11 +15,17 @@ activation/removal, rate CAS and status data. The RPC adapter maps wire requests
 to those functions; frozen Robot/context projection also stays in the native
 product. Startup creates no domain membership.
 
-The separate `xgc2_robot_visualization` dependency supplies FS150, Scout and
-Mecanum geometry, wheel/rotor animation calculations, frame names and path
-styles. This server owns ROS subscriptions, publication, scheduling, URDF
-parameters and required fixed/joint TF. Gazebo shadow rendering, algorithm
+This product owns FS150, Scout and Mecanum geometry, wheel/rotor animation,
+frame names and path styles together with ROS subscriptions, publication,
+scheduling, URDF parameters and required fixed/joint TF. Robot rendering is
+implemented privately in `src/render/robots`; there is no separate robot
+visualization package or description-publisher process. Meshes and URDF assets
+remain in the robot description products. Gazebo shadow rendering, algorithm
 planning, map production and Viewer rendering remain their owning products.
+
+ROS1 visualization is the single implementation authority. If future ROS2 or
+other visualization publishers need the same behavior, extract the shared
+calculations from this implementation into a ROS-independent library then.
 
 ## Startup and RPC
 

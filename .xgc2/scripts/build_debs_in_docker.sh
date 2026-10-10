@@ -25,7 +25,7 @@ output_dir="$(cd "$output_dir" && pwd)"
 host_uid="$(id -u)"
 host_gid="$(id -g)"
 # The build image does not carry published XGC2 packages. Install the released
-# robot visualization library from production APT, then compile as the runner
+# robot description assets and XRPC from production APT, then compile as the runner
 # so the deb outputs stay writable. Installation stays inside the container.
 docker run --rm -i --cpus 1 \
   -e HOME=/tmp -e ROS_HOME=/tmp/ros-home -e ROS_LOG_DIR=/tmp/ros-log -e ROS_IP=127.0.0.1 \
@@ -38,7 +38,7 @@ set -eo pipefail
 echo "deb [trusted=yes arch=$(dpkg --print-architecture)] https://xgc2.apt.xiaokang.ink focal main" \
   >/etc/apt/sources.list.d/xgc2.list
 apt-get update
-apt-get install -y --no-install-recommends ros-noetic-xgc2-robot-visualization libxgc2-xrpc-dev
+apt-get install -y --no-install-recommends ros-noetic-xgc2-fs150-description ros-noetic-xgc2-scout-description ros-noetic-xgc2-mecanum-description libxgc2-xrpc-dev
 chown "${HOST_UID}:${HOST_GID}" /work /out
 python3 -c 'import os,sys; os.setgid(int(os.environ["HOST_GID"])); os.setuid(int(os.environ["HOST_UID"])); os.execvp("bash", ["bash", "-c", sys.argv[1]])' '
 set -eo pipefail

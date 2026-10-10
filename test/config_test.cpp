@@ -2,7 +2,6 @@
 #include <xgc2_ros_visualizer/declared_wire.hpp>
 #include <xgc2_ros_visualizer/instance_input.hpp>
 #include <xgc2_ros_visualizer/source_history.hpp>
-#include <xgc2_robot_visualization/path_runtime.hpp>
 #include <sensor_msgs/PointCloud2.h>
 #include <nav_msgs/OccupancyGrid.h>
 #include <nav_msgs/Path.h>
@@ -139,12 +138,26 @@ TEST(InstanceConfig, InvalidSceneLabelNamespaceFailsBeforeActivation) {
   request["robots"][0]["namespace"]="/bad_slot";EXPECT_THROW(parseInstance(request),std::invalid_argument);
   value["robots"][0]["namespace"]="/bad_slot";EXPECT_THROW(projectInstanceInput(value,true),std::invalid_argument);
 }
-TEST(SourceHistory, ExactOwningSdkSamplingRollbackAndExpirySemantics) {
-  SourceHistory ring;xgc2_robot_visualization::BoundedPathRuntime sdk("world",{});geometry_msgs::Pose pose;pose.orientation.w=1;
-  const auto compare=[&] {const auto& path=sdk.message();ASSERT_EQ(ring.size,path.poses.size());EXPECT_EQ(ring.stamp,path.header.stamp);for(std::size_t i=0;i<ring.size;++i)EXPECT_EQ(ring.at(i).stamp,path.poses[i].header.stamp);};
-  for(int i=0;i<900;++i) {auto time=ros::Time(100)+ros::Duration(i*.02);pose.position.x=i;EXPECT_EQ(ring.append(time,pose),sdk.append(time,pose));compare();EXPECT_LE(ring.size,61U);}
-  for(const auto& time:{ros::Time(118),ros::Time(117),ros::Time(103),ros::Time(120),ros::Time(127)}) {EXPECT_EQ(ring.expire(time),sdk.expire(time));compare();}
-  EXPECT_EQ(ring.append(ros::Time(),pose),sdk.append(ros::Time(),pose));compare();
-  EXPECT_EQ(ring.append(ros::Time(30),pose),sdk.append(ros::Time(30),pose));compare();
+TEST(SourceHistory, SamplingCapacityExpiryAndClockRollback) {
+  SourceHistory history;
+  geometry_msgs::Pose pose;
+  pose.orientation.w=1;
+  for(int i=0;i<70;++i) {
+    pose.position.x=i;
+    ASSERT_TRUE(history.append(ros::Time(100+i/10,(i%10)*100000000),pose));
+    EXPECT_LE(history.size,61U);
+  }
+  ASSERT_EQ(history.size,61U);
+  EXPECT_EQ(history.at(0).pose.position.x,9);
+  EXPECT_EQ(history.at(60).pose.position.x,69);
+  EXPECT_FALSE(history.append(ros::Time(),pose));
+  EXPECT_FALSE(history.append(ros::Time(106,950000000),pose));
+  EXPECT_FALSE(history.append(ros::Time(106,800000000),pose));
+  ASSERT_TRUE(history.append(ros::Time(30),pose));
+  ASSERT_EQ(history.size,1U);
+  EXPECT_EQ(history.stamp,ros::Time(30));
+  ASSERT_TRUE(history.expire(ros::Time(37)));
+  EXPECT_EQ(history.size,0U);
+  EXPECT_EQ(history.stamp,ros::Time(37));
 }
 int main(int argc,char** argv) {testing::InitGoogleTest(&argc,argv);return RUN_ALL_TESTS();}

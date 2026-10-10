@@ -31,11 +31,11 @@ std::string string(const Json::Value& v, const std::string& fallback, const std:
   if (!v.isString()) throw std::invalid_argument(name + " must be a string");
   return v.asString();
 }
-std::vector<xgc2_robot_visualization::RobotDescription> roster(const Json::Value& value) {
+std::vector<xgc2_ros_visualizer::RobotDescription> roster(const Json::Value& value) {
   if (!value.isArray()) throw std::invalid_argument("robot roster must be an array");
-  std::vector<xgc2_robot_visualization::RobotDescription> result;
+  std::vector<xgc2_ros_visualizer::RobotDescription> result;
   std::string error;
-  if (!xgc2_robot_visualization::readRobotVisualizationRoster(jsonText(value), &result, &error))
+  if (!xgc2_ros_visualizer::readRobotVisualizationRoster(jsonText(value), &result, &error))
     throw std::invalid_argument(error);
   return result;
 }

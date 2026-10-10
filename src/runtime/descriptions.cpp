@@ -21,7 +21,7 @@ class Description::Impl {
     sensor_msgs::JointStateConstPtr latest;
     std::uint64_t generation{0};
   };
-  Impl(xgc2_robot_visualization::RobotDescription configured,RateKind category)
+  Impl(xgc2_ros_visualizer::RobotDescription configured,RateKind category)
       : robot(std::move(configured)),rate_kind(category),input(new Input) {
     parameter=robot.ros_namespace+"/visual_robot_description";
     const auto root=ros::package::getPath(robot.description_package);
@@ -55,7 +55,7 @@ class Description::Impl {
     result.transform.rotation.x=value.getRotation().x(); result.transform.rotation.y=value.getRotation().y(); result.transform.rotation.z=value.getRotation().z(); result.transform.rotation.w=value.getRotation().w();
     return result;
   }
-  xgc2_robot_visualization::RobotDescription robot;
+  xgc2_ros_visualizer::RobotDescription robot;
   RateKind rate_kind;
   std::string parameter,xml;
   std::shared_ptr<Input> input;
@@ -66,7 +66,7 @@ class Description::Impl {
   ros::Time joint_stamp;
   bool parameters_set{false};
 };
-Description::Description(xgc2_robot_visualization::RobotDescription robot,RateKind kind) : impl_(new Impl(std::move(robot),kind)) {}
+Description::Description(xgc2_ros_visualizer::RobotDescription robot,RateKind kind) : impl_(new Impl(std::move(robot),kind)) {}
 Description::~Description() { stop(); }
 const std::string& Description::parameter() const { return impl_->parameter; }
 RateKind Description::kind() const { return impl_->rate_kind; }

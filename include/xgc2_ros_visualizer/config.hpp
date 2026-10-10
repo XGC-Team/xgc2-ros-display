@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 #include <json/json.h>
-#include <xgc2_robot_visualization/robot_description_runtime.hpp>
+#include <xgc2_ros_visualizer/robot_roster.hpp>
 #include <xgc2_ros_visualizer/scene_contract.hpp>
 
 namespace xgc2_ros_visualizer {
@@ -59,7 +59,7 @@ struct InstanceConfig {
   Json::Value original;
   Settings settings;
   WorldBoundaryDisplay boundary;
-  std::vector<xgc2_robot_visualization::RobotDescription> robots, descriptions;
+  std::vector<xgc2_ros_visualizer::RobotDescription> robots, descriptions;
   std::vector<RelayConfig> relays;
 };
 InstanceConfig parseInstance(const Json::Value& value);
