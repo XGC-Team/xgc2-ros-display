@@ -47,11 +47,16 @@ class Server {
   void publishLoop();
   void replaceSnapshot();
   void wakePublisher();
+  void watchMaster();
   void requireRunning() const;
   Instance& instance(const std::string& id) const;
   void requireFreeClaims(const std::string& id,const InstanceSpec& spec) const;
   void countMembers();
   InputPool input_;
+  // The ROS master this server is bound to: its address and, when it publishes
+  // one, the identity of this master run. A replaced master ends the server.
+  std::string master_uri_,master_run_id_;
+  std::atomic<bool> master_reachable_{true};
   std::map<std::string,std::shared_ptr<Instance>> instances_; // Control-loop owner only.
   std::shared_ptr<const std::vector<std::shared_ptr<Instance>>> snapshot_;
   std::shared_ptr<const Rates> rates_;
@@ -59,7 +64,7 @@ class Server {
   std::int64_t rates_applied_steady_ns_{0};
   std::atomic<std::size_t> instance_count_{0},robot_count_{0};
   std::atomic<bool> stopping_{false};
-  std::thread publisher_;
+  std::thread publisher_,master_watch_;
   std::mutex failure_mutex_;
   std::exception_ptr failure_;
   const volatile std::sig_atomic_t* signal_stop_;

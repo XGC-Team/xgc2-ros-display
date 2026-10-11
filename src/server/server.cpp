@@ -26,9 +26,13 @@ void requireFields(const Json::Value& request,const std::set<std::string>& requi
 }
 }
 Server::Server(std::size_t workers,Rates rates,const volatile std::sig_atomic_t* signal_stop)
-    : input_(workers),snapshot_(new std::vector<std::shared_ptr<Instance>>),rates_(new Rates(std::move(rates))),signal_stop_(signal_stop) {
+    : input_(workers),master_uri_(ros::master::getURI()),snapshot_(new std::vector<std::shared_ptr<Instance>>),rates_(new Rates(std::move(rates))),signal_stop_(signal_stop) {
+  // A master started by roslaunch publishes the identity of its run; a bare
+  // rosmaster does not, and is then only watched for being reachable.
+  ros::param::get("/run_id",master_run_id_);
   rates_applied_steady_ns_=steadyNs();
   publisher_=std::thread(&Server::publishLoop,this);
+  master_watch_=std::thread(&Server::watchMaster,this);
 }
 Server::~Server() {stop();}
 void Server::wakePublisher() {
@@ -65,23 +69,50 @@ void Server::publishLoop() {
   } catch(...) {std::lock_guard<std::mutex> lock(failure_mutex_);failure_=std::current_exception();}
   stopping_.store(true);
 }
+// The server never rebinds to another master. A master that answers with a
+// different run is a different environment: the server fails, and its owner
+// decides what happens to the Run. One that does not answer is reported through
+// readiness until it does.
+void Server::watchMaster() {
+  std::unique_lock<std::mutex> lock(wait_mutex_);
+  while(!stopping_.load()) {
+    wake_.wait_for(lock,std::chrono::seconds(2),[this]{return stopping_.load();});
+    if(stopping_.load())return;
+    lock.unlock();
+    const bool reachable=ros::master::check();
+    std::string current;
+    const bool replaced=reachable&&!master_run_id_.empty()&&ros::param::get("/run_id",current)&&current!=master_run_id_;
+    master_reachable_.store(reachable);
+    if(replaced) {
+      {std::lock_guard<std::mutex> failure(failure_mutex_);
+       if(!failure_)failure_=std::make_exception_ptr(std::runtime_error("the ROS master was replaced by another run"));}
+      stopping_.store(true);wakePublisher();
+    }
+    lock.lock();
+  }
+}
 void Server::stop() {
-  stopping_.store(true);wakePublisher();if(publisher_.joinable())publisher_.join();
+  stopping_.store(true);wakePublisher();
+  if(master_watch_.joinable())master_watch_.join();
+  if(publisher_.joinable())publisher_.join();
   input_.stop();
   for(auto& item:instances_)item.second->deactivate();
   instances_.clear();replaceSnapshot();
 }
 void Server::rethrowFailure() {std::lock_guard<std::mutex> lock(failure_mutex_);if(failure_)std::rethrow_exception(failure_);}
-bool Server::ready() const {return !stopping_.load();}
+bool Server::ready() const {return !stopping_.load()&&master_reachable_.load();}
 Json::Value Server::facts() const {
   Json::Value result(Json::objectValue);
+  result["ros_master_uri"]=master_uri_;
+  result["ros_master_run_id"]=master_run_id_;
   result["world_clock"]=ros::Time::isSimTime()?"simulation":"wall";
   result["callback_workers"]=Json::UInt64(input_.size());
   result["instances"]=Json::UInt64(instance_count_.load());
   result["robots"]=Json::UInt64(robot_count_.load());
   result["max_instances"]=Json::UInt64(kMaxInstances);
   result["max_robots_per_instance"]=Json::UInt64(kMaxRobots);
-  if(!ready())result["reason"]="stopping";
+  if(stopping_.load())result["reason"]="stopping";
+  else if(!master_reachable_.load())result["reason"]="ros master unreachable";
   return result;
 }
 Json::Value Server::ratesStatus() const {
