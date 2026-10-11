@@ -1,0 +1,140 @@
+{
+  "apiVersion": "xgc.execution.process/v1",
+  "definitions": [
+    {
+      "id": "ros-visualizer",
+      "version": "4.0.0",
+      "label": "ROS visualization server",
+      "description": "One native ROS visualization server per Run. It owns the robot profiles of that Run, the shared scene outputs, the display relays and the per-robot rates, and serves xgc2.visualization over a Unix socket that the process creates in the private runtime directory its owner allocated.",
+      "drivers": [
+        "host"
+      ],
+      "parameters": {
+        "properties": {
+          "socketPath": {
+            "type": "string",
+            "description": "Absolute path of the control socket, inside a private runtime directory allocated by the process owner.",
+            "fixedOnly": true,
+            "ownedEndpoint": "unix-socket"
+          },
+          "rosMasterUri": {
+            "type": "string",
+            "default": "http://127.0.0.1:11311",
+            "output": true
+          },
+          "rosIp": {
+            "type": "string",
+            "default": "",
+            "output": true
+          },
+          "rosHome": {
+            "type": "string",
+            "description": "Existing owned directory mapped to ROS_HOME.",
+            "fixedOnly": true,
+            "x-xgc-path-kind": "directory"
+          },
+          "rosLogDir": {
+            "type": "string",
+            "description": "Existing owned directory mapped to ROS_LOG_DIR.",
+            "fixedOnly": true,
+            "x-xgc-path-kind": "directory"
+          },
+          "callbackWorkers": {
+            "type": "integer",
+            "description": "Size of the fixed ROS input pool.",
+            "default": 2,
+            "minimum": 1,
+            "maximum": 32
+          },
+          "worldClock": {
+            "type": "string",
+            "description": "Clock of the ROS data: the Experiment's simulation clock or the wall clock. Fixed for the life of the process.",
+            "default": "wall",
+            "enum": [
+              "simulation",
+              "wall"
+            ]
+          }
+        },
+        "required": [
+          "socketPath",
+          "rosHome",
+          "rosLogDir"
+        ],
+        "groups": [
+          {
+            "id": "ros-advanced",
+            "label": "ROS Advanced",
+            "collapsed": true,
+            "parameters": [
+              "rosMasterUri",
+              "rosIp",
+              "rosHome",
+              "rosLogDir"
+            ]
+          }
+        ],
+        "additionalProperties": false
+      },
+      "services": [
+        {
+          "service": "xgc2.visualization",
+          "api_version": "1",
+          "profile": "http.v1",
+          "endpointParameter": "socketPath",
+          "describePath": "/v1/describe"
+        }
+      ],
+      "command": {
+        "executable": "/opt/ros/noetic/lib/xgc2_ros_visualizer/xgc2_ros_visualizer_node",
+        "directExecutable": true,
+        "args": [
+          "--socket-path",
+          "${socketPath}",
+          "--callback-workers",
+          "${callbackWorkers}",
+          "--world-clock",
+          "${worldClock}",
+          "/use_sim_time:=/xgc2_ros_visualizer/use_sim_time",
+          "__name:=xgc2_ros_visualizer"
+        ],
+        "env": {
+          "CMAKE_PREFIX_PATH": "/opt/ros/noetic",
+          "LD_LIBRARY_PATH": "/opt/ros/noetic/lib:/opt/ros/noetic/lib/x86_64-linux-gnu:/opt/ros/noetic/lib/aarch64-linux-gnu",
+          "PATH": "/opt/ros/noetic/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+          "PKG_CONFIG_PATH": "/opt/ros/noetic/lib/pkgconfig",
+          "PYTHONPATH": "/opt/ros/noetic/lib/python3/dist-packages",
+          "ROS_DISTRO": "noetic",
+          "ROS_ETC_DIR": "/opt/ros/noetic/etc/ros",
+          "ROS_MASTER_URI": "${rosMasterUri}",
+          "ROS_PACKAGE_PATH": "/opt/ros/noetic/share",
+          "ROS_PYTHON_VERSION": "3",
+          "ROS_ROOT": "/opt/ros/noetic/share/ros",
+          "ROS_VERSION": "1",
+          "ROS_IP": "${rosIp}",
+          "ROS_HOSTNAME": "",
+          "ROS_HOME": "${rosHome}",
+          "ROS_LOG_DIR": "${rosLogDir}"
+        }
+      },
+      "readiness": {
+        "kind": "describe",
+        "startGraceMs": 15000,
+        "timeoutMs": 30000
+      },
+      "liveness": {
+        "kind": "none"
+      },
+      "stop": {
+        "gracePeriod": 5000000000
+      },
+      "restart": {
+        "mode": "never"
+      },
+      "logs": {
+        "maxBytes": 8388608,
+        "files": 4
+      }
+    }
+  ]
+}

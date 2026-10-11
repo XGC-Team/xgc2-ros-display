@@ -38,6 +38,8 @@ install(TARGETS xgc2_ros_visualizer_contract xgc2_ros_visualizer_runtime xgc2_ro
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 install(DIRECTORY include/${PROJECT_NAME}/ DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION})
+install(FILES process-definitions/xgc2-ros-visualizer.json
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/process-definitions)
 if(CATKIN_ENABLE_TESTING)
   catkin_add_gtest(rviz_layout_test test/rviz_layout_test.cpp src/layout/rviz_layout.cpp)
   if(TARGET rviz_layout_test)

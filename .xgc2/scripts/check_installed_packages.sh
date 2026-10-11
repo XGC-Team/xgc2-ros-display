@@ -7,7 +7,7 @@ expected="$(awk '/^version:/ {print $2; exit}' "$repo_root/.xgc2/product.yml")~f
 test "$(dpkg-query -W -f='${db:Status-Status}' "$package")" = installed
 test "$(dpkg-query -W -f='${Version}' "$package")" = "$expected"
 test "$(rospack find xgc2_ros_visualizer)" = "$prefix/share/xgc2_ros_visualizer"
-for path in lib/libxgc2_ros_visualizer_runtime.so lib/libxgc2_ros_visualizer_contract.so lib/pkgconfig/xgc2_ros_visualizer.pc include/xgc2_ros_visualizer/config.hpp include/xgc2_ros_visualizer/robot_roster.hpp include/xgc2_ros_visualizer/declared_wire.hpp include/xgc2_ros_visualizer/scene_contract.hpp share/xgc2_ros_visualizer/cmake/xgc2_ros_visualizerConfig.cmake; do
+for path in lib/libxgc2_ros_visualizer_runtime.so lib/libxgc2_ros_visualizer_contract.so lib/pkgconfig/xgc2_ros_visualizer.pc include/xgc2_ros_visualizer/config.hpp include/xgc2_ros_visualizer/profile.hpp include/xgc2_ros_visualizer/declared_wire.hpp include/xgc2_ros_visualizer/scene_contract.hpp share/xgc2_ros_visualizer/cmake/xgc2_ros_visualizerConfig.cmake; do
   test -s "$prefix/$path"
 done
 binary="$prefix/lib/xgc2_ros_visualizer/xgc2_ros_visualizer_node"
@@ -41,6 +41,9 @@ CPP
 cmake -S "$consumer" -B "$consumer/build" -DCMAKE_BUILD_TYPE=Release
 cmake --build "$consumer/build" -j1
 "$consumer/build/consumer"
+definition=/usr/share/xgc2/process-definitions/xgc2-ros-visualizer.json
+test -s "$definition"
+python3 "$repo_root/test/profile_probe.py" "$binary" "$definition"
 python3 "$repo_root/test/installed_node_probe.py" "$binary"
 python3 "$repo_root/test/check_description_resources.py"
-echo 'Installed single-entry SDK, RPC, persistent relay, URDF and owned cleanup checks passed'
+echo 'Installed single-entry SDK, process definition, robot profiles, rates, persistent relay, URDF and owned cleanup checks passed'
