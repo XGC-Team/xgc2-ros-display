@@ -48,9 +48,30 @@ def load_definition(path):
     """The one process definition a product ships, read as its supervisor reads it."""
     with open(path) as stream:
         catalog = json.load(stream)
+    require(set(catalog) == {'apiVersion', 'definitions'}, 'unexpected definition envelope field')
     require(catalog['apiVersion'] == 'xgc.execution.process/v1', 'unexpected definition schema')
     require(len(catalog['definitions']) == 1, 'a product file holds the definitions it ships')
-    return catalog['definitions'][0]
+    definition = catalog['definitions'][0]
+    for location, fields, allowed in (
+            ('definition', definition, {'id', 'version', 'label', 'description', 'parameters',
+                'setupFiles', 'command', 'services', 'readiness', 'stop', 'logs'}),
+            ('parameters', definition['parameters'], {'properties', 'required', 'groups'}),
+            ('command', definition['command'], {'executable', 'args', 'workDir', 'env', 'stdinParameter'}),
+            ('readiness', definition['readiness'], {'kind', 'startGraceMs', 'timeoutMs', 'address', 'masterUri'}),
+            ('stop', definition['stop'], {'graceMs', 'rpc'}),
+            ('logs', definition['logs'], {'maxBytes', 'files'})):
+        require(set(fields) <= allowed, location + ' has unsupported fields: ' + str(sorted(set(fields) - allowed)))
+    for name, parameter in definition['parameters']['properties'].items():
+        require(set(parameter) <= {'type', 'description', 'default', 'enum', 'minimum', 'maximum', 'sensitive',
+                'output', 'fixedOnly', 'x-xgc-path-kind', 'x-xgc-file-extensions'},
+                'unsupported fields in parameter ' + name)
+    for group in definition['parameters'].get('groups', []):
+        require(set(group) <= {'id', 'label', 'collapsed', 'parameters'}, 'unsupported parameter group field')
+    for service in definition['services']:
+        require(set(service) == {'service', 'api_version', 'profile', 'endpointParameter'},
+                'unexpected service fields')
+    require(definition['stop'] == {'graceMs': 5000}, 'visualizer stop budget must be 5000 ms')
+    return definition
 
 
 def render(definition, binary, allocations):
@@ -60,7 +81,6 @@ def render(definition, binary, allocations):
     image the definition is installed in, not the machine a probe may run on.
     """
     command = definition['command']
-    require(command.get('directExecutable') is True, 'definition must launch the native executable directly')
     require(os.path.basename(command['executable']) == os.path.basename(binary),
             'definition names another executable than the probe runs')
     properties = definition['parameters']['properties']
@@ -182,14 +202,14 @@ class Probe:
         described = self.rpc('GET', '/v1/describe')
         self.instance_id = described['instance_id']
         service, = definition['services']
+        endpoint = definition['parameters']['properties'][service['endpointParameter']]
         require(service['service'] == described['service'] and service['api_version'] == described['api_version']
-                and service['profile'] == 'http.v1' and service['describePath'] == '/v1/describe'
-                and definition['parameters']['properties'][service['endpointParameter']]['ownedEndpoint'] == 'unix-socket',
+                and service['profile'] == 'http.v1' and endpoint['type'] == 'string' and endpoint['fixedOnly'],
                 'the definition declares another service than the process hosts')
         readiness = definition['readiness']
         require(readiness['kind'] == 'describe' and 0 < readiness['startGraceMs'] <= readiness['timeoutMs'] <= 60000,
                 'readiness must be the describe contract with a finite budget')
-        require(self.rpc('GET', '/v1/describe?wait_ready_ms=%d' % min(readiness['timeoutMs'], 30000))['ready'],
+        require(self.rpc('GET', '/v1/describe?wait_ready_ms=%d' % min(readiness['timeoutMs'], 30000), bound=False)['ready'],
                 'the process is not ready under its own definition')
         return self.server
 

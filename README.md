@@ -46,7 +46,9 @@ curl --unix-socket "$XGC_RUNTIME_DIR/sockets/visualizer.sock" \
 
 The process ships its definition for Core, `process-definitions/xgc2-ros-visualizer.json`
 (installed to `/usr/share/xgc2/process-definitions`): the executable, its
-parameters, the service it hosts, readiness by `describe` and the stop grace.
+parameters, the service it hosts, readiness by `describe` and `stop.graceMs: 5000`.
+Core allocates the service socket named by `endpointParameter`; the socket parameter
+is `fixedOnly`.
 The service contract, with every route, the profile schema, revisions and the
 lifecycle, is in [docs/visualization-v1.md](docs/visualization-v1.md).
 
