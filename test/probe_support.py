@@ -7,6 +7,7 @@ Never uses a station master.
 import http.client
 import json
 import os
+import random
 import re
 import signal
 import socket
@@ -117,9 +118,18 @@ class Probe:
         os.chmod(self.work, 0o700)
         self.socket = os.path.join(self.work, 'control.sock')
         reserve = socket.socket()
-        reserve.bind(('127.0.0.1', 0))
-        self.port = reserve.getsockname()[1]
-        reserve.close()
+        try:
+            for port in random.sample(range(20000, 40001), 100):
+                try:
+                    reserve.bind(('127.0.0.1', port))
+                    break
+                except OSError:
+                    continue
+            else:
+                raise RuntimeError('no private ROS master port available in 20000-40000')
+            self.port = reserve.getsockname()[1]
+        finally:
+            reserve.close()
         self.master_uri = 'http://127.0.0.1:%d' % self.port
         self.log_directory = os.path.join(self.work, 'roslog')
         os.makedirs(self.log_directory, mode=0o700)
