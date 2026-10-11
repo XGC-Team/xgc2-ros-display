@@ -28,9 +28,15 @@ for path in share/xgc2_ros_visualizer include/xgc2_ros_visualizer lib/pkgconfig/
   mkdir -p "$pkg_root$prefix/$(dirname "$path")"
   cp -a "$stage/$path" "$pkg_root$prefix/$path"
 done
-for path in include/xgc2_ros_visualizer/config.hpp include/xgc2_ros_visualizer/declared_wire.hpp include/xgc2_ros_visualizer/scene_contract.hpp share/xgc2_ros_visualizer/cmake/xgc2_ros_visualizerConfig.cmake share/xgc2_ros_visualizer/package.xml; do
+# The process definition is read by the supervisor from the common directory.
+definitions="$pkg_root/usr/share/xgc2/process-definitions"
+mkdir -p "$definitions"
+mv "$pkg_root$prefix/share/xgc2_ros_visualizer/process-definitions/xgc2-ros-visualizer.json" "$definitions/"
+rmdir "$pkg_root$prefix/share/xgc2_ros_visualizer/process-definitions"
+for path in include/xgc2_ros_visualizer/config.hpp include/xgc2_ros_visualizer/profile.hpp include/xgc2_ros_visualizer/declared_wire.hpp include/xgc2_ros_visualizer/scene_contract.hpp share/xgc2_ros_visualizer/cmake/xgc2_ros_visualizerConfig.cmake share/xgc2_ros_visualizer/package.xml; do
   test -s "$pkg_root$prefix/$path"
 done
+test -s "$definitions/xgc2-ros-visualizer.json"
 test -x "$pkg_root$prefix/lib/xgc2_ros_visualizer/xgc2_ros_visualizer_node"
 test -s "$pkg_root$prefix/lib/libxgc2_ros_visualizer_runtime.so"
 test -s "$pkg_root$prefix/lib/libxgc2_ros_visualizer_contract.so"

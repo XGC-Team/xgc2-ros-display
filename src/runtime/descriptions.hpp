@@ -3,16 +3,15 @@
 #include <string>
 #include <vector>
 #include <geometry_msgs/TransformStamped.h>
-#include <xgc2_ros_visualizer/config.hpp>
+#include <xgc2_ros_visualizer/profile.hpp>
 #include "input_pool.hpp"
 namespace xgc2_ros_visualizer {
 // One cold URDF record, with one latest JointState handle. No RSP process/host.
 class Description {
  public:
-  Description(xgc2_ros_visualizer::RobotDescription robot,RateKind kind);
+  explicit Description(const RobotProfile& profile);
   ~Description();
   const std::string& parameter() const;
-  RateKind kind() const;
   bool statePublisher() const;
   void activate(InputPool& pool);
   void appendFixed(std::vector<geometry_msgs::TransformStamped>* output) const;

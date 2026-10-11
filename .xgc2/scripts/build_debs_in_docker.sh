@@ -2,7 +2,7 @@
 set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 image=ghcr.io/xgc-team/xgc2-images/xgc2-build-focal-full-noetic:1.0.8@sha256:fce2d76fddf4f6439bf0a188249b731650febdc163befc360bed186b269d252a
-cxx="clang++-10"
+cxx="g++"
 work_dir=""
 output_dir=""
 while [[ $# -gt 0 ]]; do
@@ -16,7 +16,7 @@ while [[ $# -gt 0 ]]; do
 done
 test -n "$work_dir" && test -n "$output_dir"
 if [[ -z "$cxx" ]]; then
-  echo "--cxx must select a preprovisioned C++20 compiler in the controlled Noetic image" >&2
+  echo "--cxx must select a preprovisioned C++17 compiler in the controlled Noetic image" >&2
   exit 1
 fi
 install -d "$work_dir" "$output_dir"

@@ -1,219 +1,282 @@
 # Visualization v1
 
-The service is `xgc2.visualization`, API version `1`, profile `http.v1`.
-The process supervisor supplies one `--bootstrap-input` file, ROS graph
-remaps and managed ROS cache/log directories. Startup creates no domain instances.
-The provider creates a fresh random incarnation on every process start. Product
-bootstrap is explicit native CLI input, never an inherited ROS master parameter;
-old private product parameter aliases are rejected.
-`GET /v1/describe` returns its `service_ref`; discovery never creates an instance
-or starts another provider. All other calls bind that incarnation.
+The service is `xgc2.visualization`, API version `1`, profile `http.v1`. It is a
+Run-owned process: whoever starts it owns its lifetime, and it ends with its
+Run. The process creates its control socket inside a private runtime directory
+(owned by the effective user, mode 0700) that its owner names on the command
+line; it never creates that directory.
 
-Every request has one `X-Request-ID` and one `X-Xrpc-Timeout-Ms`. Bound calls also
-have one `X-Xrpc-Instance-ID`. The XRPC SDK validates metadata, response identity,
-HTTP framing, admission, cancellation and the exclusive Unix lease. A caller
-retains its request ID and distinguishes a transport failure with unknown effects
-from a confirmed domain rejection; writes are never automatically replayed.
+```sh
+xgc2_ros_visualizer_node --socket-path /run/xgc2/sockets/visualizer.sock \
+    [--callback-workers 2] [--world-clock wall|simulation] [ROS remaps]
+```
+
+| Option | Meaning |
+| --- | --- |
+| `--socket-path` | Required. Absolute path of the Unix socket. A stale socket of a crashed owner is reclaimed; a live one is never taken over. |
+| `--callback-workers` | Input pool size, 1-32, default 2. |
+| `--world-clock` | `wall` (default) or `simulation`. Immutable: it selects the ROS data clock before ROS initializes. |
+| ROS remaps | `__name`, `__ns`, `__master`, `__ip`, `__hostname`, `/use_sim_time:=...` and ordinary `from:=to` remaps. `__log` is rejected: ROS writes below the supervisor-allocated `ROS_LOG_DIR`. |
+
+The environment must provide the absolute allocations `ROS_HOME` and
+`ROS_LOG_DIR` and the ROS master (`ROS_MASTER_URI`, `ROS_IP`). Any other
+option fails startup before a socket exists.
+
+## Readiness
+
+`GET /v1/describe`, with or without `wait_ready_ms`, is the unbound discovery
+call (it needs no instance header) and returns the readiness envelope:
+
+```json
+{"service":"xgc2.visualization","api_version":"1","instance_id":"<32 hex>","ready":true,
+ "facts":{"ros_master_uri":"http://127.0.0.1:11311","ros_master_run_id":"<uuid>","world_clock":"simulation",
+          "callback_workers":2,"instances":1,"robots":3,"max_instances":64,"max_robots_per_instance":256}}
+```
+
+`instance_id` is fresh on every process start. Every request carries one
+`X-Request-ID` and one `X-Xrpc-Timeout-Ms`; every non-discovery call
+also carries the instance in `X-Xrpc-Instance-ID` and is rejected with 409 when
+it differs, so a caller of a previous process can never reach the next one.
+A supplied instance header is verified on discovery calls too.
+
+`ready` is a fact of this process: it is bound to its ROS master and is not
+stopping. `facts.reason` names why it is not (`stopping`, `ros master
+unreachable`). `GET /v1/describe?wait_ready_ms=<0..30000>` is part of the
+unbound discovery call, with no instance header required. It holds
+the request without polling until `ready` is true, the wait elapses or the
+call's own deadline is near, and then answers with the current document. At
+most 16 calls are held; Stop answers them at once.
+
+The process never rebinds to another master. It reads the master's run id
+(`/run_id`, published by `roscore`/`roslaunch`) at startup and checks the
+master every two seconds: a master that does not answer makes `ready` false
+until it does; a master that answers with another run id is a different
+environment, so the process logs it and exits with status 1.
+
+## Model
+
+* **Instance**: one display scene on the ROS graph, named by the caller (a
+  Run id: 1-128 letters, digits, `_`, `.`, `-`). At most 64 per process.
+* **Robot**: one member of an instance, named by its ROS namespace without the
+  slash (`uav1`). At most 256 per instance. A robot has exactly one **profile**
+  and optional **rate overrides**.
+* **Profile**: everything needed to draw one robot (below). It is a value; two
+  profiles are equal when their resolved documents are.
+* **Scene**: what the robots of an instance share: which optional outputs exist
+  (`markers`, `transforms`, `scene`), the world boundary and its mode, and the
+  display relays.
+* **Rate table**: per kind and channel, the default rate of every robot of that
+  kind. A robot can override channels of its own kind.
+
+Nothing is persisted here. Saved profiles belong to Core configuration (the
+Robot's visualization profile); this service holds the applied state in memory
+and reports it honestly: `desiredRevision` is the revision the caller asked
+for, `appliedRevision` the one in effect, `persistedRevision` is always `null`.
+An accepted change is applied before the receipt is sent, so the two are equal
+in every successful receipt; a rejected one changes neither.
+
+## Routes
 
 | Method and route | Body | Result |
 | --- | --- | --- |
-| `GET /v1/describe` | Empty | ServiceRef, configuration capabilities and effective resource policy |
-| `GET /v1/xrpc/policy` | Empty | One startup-resolved policy revision, values, sources and ceilings |
-| `GET /v1/xrpc/storage` | Empty | Resolved runtime/cache/log write allocations and writer declarations |
-| `GET /v1/xrpc/diagnostics` | Empty | Drain at most 16 fixed redacted SDK diagnostic records; capacity/drop counters |
-| `GET /v1/xrpc/log-level` | Empty | Effective diagnostic policy revision |
-| `PUT /v1/xrpc/log-level` | `{expectedRevision, level}` | SDK revision CAS for the in-memory log filter; format requires restart |
-| `GET /v1/xrpc/status` | Empty | SDK transport counters and the domain handoff occupancy, with source time |
-| `GET /v1/health` | Empty | Provider incarnation, domain readiness and fixed callback-worker count |
-| `GET /v1/status` | Empty | Bounded membership, publication counts and the effective rate table |
-| `GET /v1/rates` | Empty | Complete rate table and desired/applied/persisted revisions |
+| `GET /v1/describe[?wait_ready_ms=]` | Empty | Readiness envelope |
+| `GET /v1/status` | Empty | Server readiness, the rate table and the status of every instance |
+| `GET /v1/rates` | Empty | Complete per-kind table and its revisions |
 | `PUT /v1/rates` | `{expectedRevision, rates}` | Revision CAS and atomic replacement of the complete validated table |
-| `GET /v1/instances/<id>` | Empty | Existing immutable configuration readiness and native counts |
-| `PUT /v1/instances/<id>` | Complete frozen input `{robots, context, settings, displayRelays}` | Native projection and activation or an identical owned-configuration no-op; conflicting content is 409 |
-| `DELETE /v1/instances/<id>` | Empty | Native callback/publication fence and deletion of only owned outputs |
+| `GET /v1/instances/<id>` | Empty | Instance status: revisions, robots, counters |
+| `PUT /v1/instances/<id>` | Frozen input `{robots, context, settings, displayRelays}` | Create the instance, or make it equal to this desired state: only robots whose profile differs are rebuilt |
+| `DELETE /v1/instances/<id>` | Empty | Retract everything the instance published and stop its inputs |
+| `GET /v1/instances/<id>/robots/<robot>` | Empty | Resolved profile, revisions, effective rates, counters |
+| `PUT /v1/instances/<id>/robots/<robot>` | `{profile, expectedRevision?}` | Add the robot or replace its profile |
+| `DELETE /v1/instances/<id>/robots/<robot>` | Empty | Remove one robot; removing an absent robot succeeds |
+| `GET /v1/instances/<id>/robots/<robot>/rates` | Empty | Overrides and effective rates |
+| `PUT /v1/instances/<id>/robots/<robot>/rates` | `{rates, expectedRevision?}` | Replace the robot's rate overrides |
 
-IDs contain 1–128 ASCII letters, digits, `_`, `.` or `-`. The path owns the Run's
-domain instance ID; the body has exactly `robots`, `context`, `settings`,
-`displayRelays`. `robots` is the complete frozen public Robot array (at most 256);
-`context` is the complete frozen session context, including `runMode`,
-`worldClock`, `worldBoundary`. `settings` is the full panel settings object.
-`displayRelays` contains at most 64 records with exactly `source`, `topic`,
-`messageType`. The native product projects description/model metadata, selected
-localization source/offset, palettes and relay kind from those values. Core
-passes them through without reimplementing domain projection. The retired
-`instanceId` body envelope and projected `descriptions`/`worldBoundary` wire
-document are rejected; neither is another accepted activation format.
+Errors are `{"ok":false,"error":{"code","message"}}`: 400 `invalid_argument`
+(nothing was changed), 404 `not_found`, 405, 409 `conflict` (stale revision,
+output conflict, instance limit), 503 `unavailable` (stopping). Writes are never
+replayed by the transport: a caller that lost a reply reads the instance or
+robot back and compares `appliedRevision` and the resolved profile.
 
-Optional `settings.publication` contains only boolean `markers`, `transforms`,
-`scene`, `scenePaths`, `paths`, `groundScene`. Defaults are respectively false,
-true, true, false, true, true. These explicit native publication controls retain
-relay-only operation, independent Marker/Scene paths and description-only ground
-rosters. A normal frozen panel needs no publication override. Other panel fields
-remain owned by their existing Viewer/product consumers.
-The complete rate table has the kind/channel fields described in the README.
-Rates are finite 0.1–1000 Hz values; unknown/missing fields fail before mutation.
-A rate update requires an integer positive `expectedRevision`; unknown fields,
-persistence requests and stale revisions fail without changing the table.
+## The instance PUT
 
-The rate table's atomic immutable-snapshot publication is its application
-boundary. A publication tick already using an older table finishes under that
-table. Later ticks acquire the replacement; the provider wakes the scheduler on
-change. The receipt has equal `desiredRevision` and `appliedRevision`, an
-`appliedAtSteadyNs`, `state: applied`, and `persistedRevision: null`. The table is
-in-memory configuration, not a durable preference store. Instance configuration
-is likewise immutable and ephemeral: activation has desired/applied revision 1
-and no persisted revision. Native activation does not assert fresh sensor data,
-Viewer rendering, or scientific progress.
+The body is the already frozen configuration, exactly `robots` (the public
+Robot rows), `context` (the session context), `settings` (the panel entry) and
+`displayRelays`. The service projects it into the desired state; Core passes the
+facts through and calculates no topic table. Retired envelopes (`instanceId`,
+`descriptions`, `worldBoundary`, a relay `robotKind`) are rejected.
 
-The process incarnation in ServiceRef is distinct from the Run-owned domain
-instance ID. The provider generates it; no `serverInstanceId` is supplied by a
-manifest, stored or copied between starts. Individual relay rate fields and a
-caller-supplied relay `robotKind` are rejected.
+A Robot becomes a member when `visualization.descriptionPackage` names an
+installed description; a Robot without one is not displayed. `sceneClass`
+(`fs150`, `scout`, `mecanum`) gives it a scene presence, an empty `sceneClass`
+publishes its description only. Each field of the profile comes from, in
+increasing precedence: the kind's defaults, the Robot facts (`visualization`,
+`namespace`, localization sources, the run mode and simulator of `context`),
+the panel `settings`, and the Robot's saved profile `visualization.profile`, a
+profile fragment with the sections below that is merged over the rest.
 
-## Consumer sequence and completion
+The panel `settings` the service reads: `markerColor`, `labelScaleInvariant`,
+`labelFontSizeMeters`, `labelFontSizePixels`, `markerOpacity`, `uavLabelOffset`,
+`scoutLabelOffset`, `mecanumLabelOffset`, `worldBoundaryMode` (`off`, `ground`,
+`walls`), `uavHeightProjection`, the history palettes `uavPalette`,
+`scoutPalette`, `mecanumPalette`, and `publication`: `markers`, `transforms`,
+`scene` (the scene's optional outputs), `scenePaths`, `paths` (the default of
+each robot) and `groundScene` (`false` keeps Scout and Mecanum robots as
+descriptions without a scene presence). Other panel fields belong to the viewer
+and are ignored.
 
-The existing workflow explicitly starts this one native executable. Its generic
-service discovery performs `GET /v1/describe` with finite request metadata and
-registers the returned ServiceRef only after checking the selected `target_id`,
-`service: xgc2.visualization`, `api_version: "1"`, `profile: http.v1` and allocated
-endpoint. Discovery starts no process and creates no domain membership. No
-separate RPC process, ROS ready-topic probe, `/health` probe or manufactured
-incarnation is part of this sequence.
+`displayRelays` has at most 64 records `{source, topic, messageType}`. A relay
+copies one source topic below `/xgc/display` byte for byte; only PointCloud2,
+OccupancyGrid, Path and PoseArray are accepted. Its rate is the display channel
+of the kind row of the robot that owns the source (`global` otherwise).
 
-The workflow next sends one bound `PUT /v1/instances/<runId>` with its already
-frozen values, for example:
+The receipt is the instance status plus `created`, `unchanged` and `changes`:
 
 ```json
-{"robots":[],"context":{"runMode":"simulation","worldClock":"simulation","worldBoundary":null},"settings":{},"displayRelays":[]}
+{"ok":true,"id":"run1","created":false,"unchanged":false,
+ "changes":{"added":["uav5"],"rebuilt":["uav2"],"removed":[],"unchanged":["uav1","uav3"],
+            "scene":false,"relaysAdded":0,"relaysRemoved":0},
+ "configuration":{"desiredRevision":3,"appliedRevision":3,"persistedRevision":null,
+                  "state":"applied","appliedAtSteadyNs":1234},
+ "robots":[{"id":"uav1","kind":"fs150","scene":true,"generation":1,
+            "configuration":{"desiredRevision":1,"appliedRevision":1,"persistedRevision":null}}]}
 ```
 
-Completion requires HTTP 200, `ok: true`, `id` equal to the requested Run ID,
-`ready: true`, and `configuration.desiredRevision == appliedRevision == 1` with
-`persistedRevision: null`. The native provider validates the whole candidate,
-realizes installed URDFs, registers inputs/outputs and activates membership before
-returning this receipt. It does not merely enqueue the operation. Matching owned
-configuration is a no-op with `unchanged: true`; a different owned candidate is
-409 and requires an explicit DELETE before replacement. Invalid input, clock
-mismatch and output conflicts leave existing membership unchanged. Native ready
-does not prove a fresh pose, Viewer frame, completed camera operation or scientific
-progress; those existing consumer success conditions remain separate.
+An identical PUT is a no-op: `unchanged: true`, no revision changes. The
+instance revision is 1 at creation and advances by one for every applied change
+of membership, profiles, scene or relays. A robot's revision is 1 when it is
+added and advances for every change of its profile or of its rate overrides;
+`generation` counts how often its resources were built, so it advances only
+with the profile.
 
-Run removal sends bound `DELETE /v1/instances/<runId>` with a genuinely empty
-body. HTTP 200, `ok: true`, the same `id` and `removed: true` mean that native
-publication in flight is fenced, relay/subscription work is stopped and only
-owned outputs/unchanged owned parameters are removed. Repeating removal is safe.
-ROS master discovery unregistration can settle asynchronously after this native
-fence; the receipt does not assert that the remote discovery cache is empty.
+The instance PUT states the whole desired configuration. It therefore
+replaces online adjustments made through the robot routes, and returns
+profiles the caller changed to what the frozen input says. Rate overrides
+belong to the robot id: they survive a rebuild and end with the robot.
 
-Stopping the native process uses its existing SIGTERM/process-stop owner and
-waits for actual process exit. The application joins domain/publication/input
-work, removes owned outputs and shuts down ROS before SDK drain releases its
-socket lease. A caller timeout or forced crash is an unknown-effects outcome,
-not a successful stop or rollback. There is no separate RPC shutdown method or
-Core sidecar drain. Restart changes ServiceRef incarnation, rejects stale bound
-calls and restores no instance/rate state; reactivation is a new explicit action,
-never an automatic replay of an uncertain mutation.
+## The robot profile
 
-## Startup binding migration
+`PUT .../robots/<robot>` takes `{profile, expectedRevision?}`; `GET` returns the
+resolved profile in the same schema, so a client reads it, changes it and puts
+it back. `expectedRevision` is the robot's `desiredRevision` (0 expects that the
+robot does not exist yet); a stale one fails with 409, an absent one makes the
+write unconditional. The document is strict: unknown sections or fields, fields that do not
+apply to the robot's kind and values out of range fail with 400 and change
+nothing. Omitted fields take the kind's defaults, so a profile is the same
+value whether it is written out or abbreviated. Required are `model.kind` and
+`model.description.package` and `.file`.
 
-`--initial-instance-file`, its reader/public Bootstrap helper, and implicit
-startup activation are removed. Old ROS-master `initial_instance_file` and
-`server_instance_id` values remain non-authoritative; private parameter aliases
-and the retired CLI option fail startup. Consumers remove `bootstrapJson`,
-`bootstrapFile` and product-specific file materialization. Freeze the domain input
-once in the workflow, then pass it in the explicit PUT above.
+| Section.field | Meaning | Default |
+| --- | --- | --- |
+| `model.kind` | `fs150`, `scout`, `mecanum` (renderer class and row of the rate table) or `global` (description only) | required |
+| `model.scene` | Scene identity of the robot's entities and frames; empty for no scene presence | robot id (`global`: empty) |
+| `model.meshScale` | Scale of the rendered meshes | 1 (`mecanum` 0.001) |
+| `model.heightProjectionColor` | FS150 only. Lowercase `#rrggbb` of the height projection; empty disables it | empty |
+| `model.description` | Installed URDF `{package, file, statePublisher, jointStateTopic}`. `statePublisher` makes the service publish its joint TF; a scene robot cannot also be a state publisher | `jointStateTopic` `joint_states` |
+| `state.poseTopic` | The one pose that drives the scene robot | `/<ns>/mavros/local_position/pose` (FS150), `/<ns>/pose` (ground) |
+| `state.arPoseTopic` | FS150 only. Mocap pose of the camera-pane identity and AR path; empty for none | empty |
+| `state.worldOffset` | FS150 only. `[x,y,z]` added once to the AR pose | `[0,0,0]` |
+| `frames.world` | The fixed frame (`world`) | `world` |
+| `frames.labelOffset` | Height of the label anchor above the robot, -10..10 m | 0.55 (`scout` 0.65, `mecanum` 0.32) |
+| `path.topic`, `path.arTopic` | Path topics below the robot namespace; `arTopic` exists with `arPoseTopic` only | `path`, `ar_path` |
+| `labels` | `color` (lowercase `#rrggbb`), `scaleInvariant`, `fontSize` (meters, or pixels when scale invariant), `opacity` 0..1 | `#00a2ff`, `false`, 0.24 / 16, 1 |
+| `animation` | Freshness windows and animation inputs of the kind: FS150 `poseTimeout`, `stateTimeout`, `rotorGround`, `rotorTransition`, `rotorAirborne`; Scout `poseTimeout`, `motionTimeout`, `wheelRadius`, `trackWidth`, `wheelDeadband`, `wheelMaxSpeed`; Mecanum the same with `wheelbasePlusTrack` for `trackWidth`; none for `global` | 0.5 s, 2 s, 25 / 90 / 60 rad/s, 0.08 m, 0.416 m, 0.02, 35 rad/s |
+| `publication` | What the robot contributes: `markers`, `transforms`, `scene`, `scenePaths`, `paths` | `true`, `true`, `true`, `false`, `true` |
 
-The executable accepts one required `--bootstrap-input /explicit/path` plus
-standard ROS remaps. It consumes the common XRPC
-`contracts/bootstrap-input.schema.json` and `bootstrap.schema.json` through the
-shared C++ loader. The binding fixes `target_id`, `service`, `api_version`,
-`profile`, `endpoint`, `runtime_grant`, `authentication`, `secret_handles`,
-`storage_grants`; it contains no incarnation or Run membership. This native
-provider requires `xgc2.visualization`, API `"1"`, `http.v1`, Unix and
-`local_private`. Remote profiles fail explicitly before ROS initialization;
-there is no plaintext or local transport fallback. Local-private Unix uses
-empty credential grants and secret handles.
+`publication` can only narrow what the scene publishes: the shared outputs
+exist when the scene's `publication` switches them on (`markers` off by
+default), and a robot decides whether it contributes to them. `paths` creates
+the robot's own Path topics; `scenePaths` adds its history to the scene layer.
 
-The loader owns the 16 KiB bounded secure input read, shared identity/schema
-validation and grant resolution. The process owner's runtime grant resolves to
-the existing owned mode0700 endpoint parent, is validated against that parent
-inode and is passed to the shared HTTP host as a retained descriptor. No
-product/Core directory creation, chmod, lease or credential parser is added.
-The domain request remains separately bounded by the 1 MiB HTTP policy.
+### What an apply does
 
-The opaque `application` is a native settings object with only these fields:
+Applying a profile that differs from the applied one rebuilds that robot and
+nothing else. The old robot unsubscribes its inputs, deletes the scene
+entities and markers it showed by identity, publishes an empty Path on and
+withdraws its Path topics, and removes the URDF parameters it set (a parameter
+that someone else replaced is left alone). The new robot loads its URDF and
+renderer first, so a profile that cannot be built changes nothing, and then
+creates its subscriptions, outputs and parameters. The resources of every other
+robot, their subscriptions, publishers and rate phase, are untouched. A
+resource failure after that point restores the previous state and fails the
+call.
 
-| Field | Native meaning |
+| Change | Effect |
 | --- | --- |
-| `rosHomeGrant` | Required opaque name matching one declared storage grant; resolves to the existing owned `ROS_HOME` directory |
-| `rosLogGrant` | Required distinct opaque name matching the other storage grant; resolves to the existing owned `ROS_LOG_DIR` directory |
-| `callbackWorkers` | Optional immutable integer1–32, default2; existing shared ROS input pool |
-| `worldClock` | Optional immutable `wall` or `simulation`, default`wall`; must match activation's `context.worldClock` |
-| `rates` | Optional partial kind/channel object overlaying native defaults, default`{}`; runtime PUT still requires the complete table |
+| A robot's profile (any field) | That robot is rebuilt |
+| Robot added or removed | Only that robot's resources are created or retracted |
+| Rate table or a robot's rate overrides | Effective at the next scheduler tick, no rebuild |
+| Scene switches (`markers`, `transforms`, `scene`) | The shared outputs are retracted and advertised again as the scene now calls for them; robot inputs are untouched |
+| World boundary or its mode | The boundary layers are sent again |
+| A display relay | That relay is replaced; the others keep running |
 
-Both storage grants are resolved by the SDK before ROS starts and remain held
-through the native lifecycle. `ROS_HOME` and `ROS_LOG_DIR` are explicit absolute
-process-owner allocations; grant names are not paths. ROS libraries retain
-their native path-based writes, and the process supervisor owns quota/rotation.
-The provider creates no missing directory. Unknown application fields, missing
-or unresolved grants and invalid settings fail before native startup. Robots,
-Run IDs and display relays belong solely to the explicit domain PUT.
-`--socket`, `--target-id`, `--callback-workers`, `--world-clock` and `--rates-json`
-are retired rather than aliases or alternative authority.
+A robot's saved profile is the same as a profile written by hand: either way a
+panel setting reaches exactly the robots whose resolved profile it changes (a
+`scoutLabelOffset` rebuilds the Scouts only).
 
-```json
-{"schema_version":1,"binding":{"schema_version":1,"target_id":"fixture:target","service":"xgc2.visualization","api_version":"1","profile":"http.v1","endpoint":{"kind":"unix","address":"/allocated/private/visualizer.sock"},"runtime_grant":"visualizer:runtime","authentication":"local_private","secret_handles":{},"storage_grants":["visualizer:ros-home","visualizer:ros-log"]},"grants":{},"application":{"rosHomeGrant":"visualizer:ros-home","rosLogGrant":"visualizer:ros-log","callbackWorkers":2,"worldClock":"simulation","rates":{}}}
-```
+Output names are claimed per instance (`/xgc/tf`, `/xgc/scene` and the other
+shared topics, `/markers`, `/tf_static`, each robot's Path topics and URDF
+parameters, each relay's display topic). An apply that would take a name
+another instance holds fails with 409 before anything changes. Instances can
+share a process only when they publish disjoint outputs; an Experiment normally
+has one.
 
-The transport uses one XRPC HTTP owner and one fixed domain worker. Native ROS
-input uses the existing fixed pool; publication uses one scheduler. Domain work
-belongs to directly callable native instance, rate and status functions. HTTP
-paths, methods, envelope fields and error status mapping live in the thin RPC
-adapter. Frozen-input projection is also a native function; startup activates no
-instances. The
-native executable owns both domain and transport lifetimes; its readiness and
-completion evidence come from actual native work.
-The native runtime library links without XRPC. Only the native executable links
-the adapter and shared XRPC transport; native data/function consumers remain
-C++14 and do not require transport headers or an RPC endpoint.
-Domain work
-never runs in the HTTP IO handler. The preallocated handoff is bounded by
-`HOST_MAX_IN_FLIGHT`, including active work. Expired or cancelled queued calls do
-not begin native work. Cancellation after dispatch does not roll back activation,
-rate application or deletion. The endpoint lease and admission remain retained
-until actual work is quiescent, including during shutdown. The host finishes its
-domain worker, stops the native publication scheduler and input pool, fences
-owned output deletion and shuts down the native ROS graph before SDK drain can
-release the endpoint lease.
-A slow native operation
-can therefore outlive a caller or drain deadline; lease release never asserts
-that a cancelled operation has ended.
-After an owner crash, restart uses the shared lease's unreachable-socket reclaim:
-the exclusive lock, ownership, finite reachability proof and unchanged inode are
-checked before deletion. A live endpoint or non-socket path is never reclaimed.
+## Rates
 
-Runtime environment is snapshotted once by the process root and passed to XRPC.
-The product declares 32 connections/in-flight calls, 16 KiB headers, 1 MiB
-request/response bodies and 5 s call/header/idle/drain limits as deployment
-choices and ceilings. Smaller supported settings use `XGC2_XRPC_` registry names;
-unsupported explicit settings, empty values, unknown names and excess limits
-fail startup. This host exposes policy/status only through its private endpoint;
-there is no extra diagnostic listener. The private log-level method applies the
-SDK's declared dynamic log filter with CAS; transport limits and log format remain
-startup-only. SDK diagnostic records stay in a bounded 256-record memory ring;
-only an explicit authorized drain returns them. Records contain stable codes and
-identities, without headers, payloads, secrets or arbitrary metric labels.
+Rates are finite 0.1-1000 Hz values. The table has the four kind rows (`fs150`,
+`scout`, `mecanum`, `global`) with their applicable channels (see the README).
+`PUT /v1/rates` replaces the complete table under a positive integer
+`expectedRevision`; an incomplete, invalid or stale candidate changes nothing.
+
+A robot override replaces channels of the robot's own kind row for this robot
+only: `PUT .../rates` with `{"rates":{"path":2}}` makes the path of this robot
+2 Hz while every other robot follows the table. The body replaces the previous
+overrides (`{}` clears them). Display-relay channels and the channels of the
+scene (`tf_root`, `tf_static`, `world_boundary`, `readiness`) are not
+overridable; a `global` robot can override `joint_tf` only. `expectedRevision`
+is the robot's `desiredRevision`; without it the write is unconditional.
+
+The effective rate of a channel is the override if the robot has one, else the
+table. A publication tick already running finishes under the rates it started
+with; the next tick uses the replacement, and the scheduler wakes at once even
+when every rate is 0.1 Hz.
+
+## Completion
+
+The receipt of a PUT is sent after the change is applied to the native
+objects: the URDF is loaded, inputs are subscribed, outputs are advertised.
+That does not prove a fresh pose, a viewer frame, a completed camera operation
+or scientific progress; those success conditions stay with their consumers.
+
+A caller that times out has an unknown outcome for that write and reads the
+state back. Cancelling a call never rolls anything back.
+
+## Lifecycle and resources
+
+* **Stop** (`SIGTERM`/`SIGINT`) stops admission, answers held describe calls,
+  finishes the domain worker, stops the scheduler and input pool, retracts the
+  outputs of every instance by identity (a latched topic is never cleared as a
+  whole), shuts ROS down and only then releases the socket. A slow native
+  operation can outlive a caller deadline; releasing the lease never asserts
+  that a cancelled operation ended.
+* **Restart or crash** restores nothing: instances, profiles, overrides and the
+  rate table are ephemeral, and reactivation is a new explicit PUT. The socket
+  of a killed process is reclaimed by its successor (finite reachability proof,
+  unchanged inode); a live endpoint or a non-socket path is never taken.
+* **Threads**: one XRPC host (SDK default limits: 32 connections and calls,
+  16 KiB headers, 1 MiB bodies), one domain worker with a bounded handoff, the
+  fixed input pool, one publication scheduler and one master watcher. Robots
+  create no threads and no helper processes.
+* **Diagnostics**: warnings of the transport (rejected, expired or failed calls)
+  go to stderr as bounded redacted records; the supervisor owns the log.
 
 | Write class | Writer and location | Trigger and recovery |
 | --- | --- | --- |
-| Instance/rate state | Provider memory | Explicit configuration; discarded at process exit, activated only by a subsequent explicit domain call |
-| Unix socket and lease | XRPC; supervisor-granted private 0700 runtime directory | Process bind/stop; lock is retained, only the owned socket inode is removed |
-| Robot descriptions/assets | Owning installed packages; read-only | Native URDF realization; the provider never rewrites packages |
-| ROS parameters | Provider on the selected ROS graph | Native activation/deletion; only an unchanged owned value is removed |
-| ROS caches and logs | ROS libraries; explicitly allocated `ROS_HOME`/`ROS_LOG_DIR` | Native lifecycle; deployment owns quota, log rotation and cache cleanup |
-| Process diagnostics | Bounded individual failure messages on stderr | Supervisor owns log location, rotation and retention |
+| Instance, profile and rate state | Process memory | Explicit calls; discarded at exit |
+| Unix socket and lease | XRPC, in the owner's private runtime directory | Bind and stop; the lock persists, only the owned socket inode is removed |
+| Robot descriptions and assets | Installed packages, read only | URDF loading; never rewritten |
+| ROS parameters | This process, on the selected master | Robot rebuild/removal; only an unchanged owned value is deleted |
+| ROS cache and logs | ROS libraries below `ROS_HOME`/`ROS_LOG_DIR` | Supervisor owns quota and rotation |
 
-No database schema, import, durable rate-save, browser-store or filesystem
-fallback is part of this service. Cache cleanup and transport stop never delete
-user documents. ROS payload retention and serialization are message-dependent;
-fixed application thread/history counts do not imply a universal ROS byte limit.
+No database, durable save, browser store or filesystem fallback is part of
+this service.
