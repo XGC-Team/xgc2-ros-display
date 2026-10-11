@@ -5,7 +5,6 @@
 #include <memory>
 #include <string>
 #include <utility>
-#include <vector>
 
 #include <json/json.h>
 
@@ -20,26 +19,27 @@ using RpcHandler = std::function<RpcReply(const std::string& method,
                                           const std::string& path,
                                           const Json::Value& body)>;
 
+// The describe document at this instant: the readiness envelope
+// {service, api_version, instance_id, ready, facts}. It is built by the domain
+// and may be called from the transport owner's thread at any time.
+using DescribeProvider = std::function<Json::Value()>;
+
 struct RpcOptions {
-  std::string target_id;
+  // Fresh per process start; every bound call carries it.
   std::string instance_id;
-  std::string ros_home;
-  std::string ros_log_dir;
-  // Borrowed resolved runtime-directory grant; the shared host duplicates it.
-  int retained_parent_fd{-1};
-  std::vector<std::pair<std::string, std::string>> environment;
 };
 
-// A C++14 facade for the C++20 XRPC host, without ROS or SDK types in its ABI.
-// One fixed domain worker owns the handler. Its preallocated handoff is bounded
-// by XRPC admission, and retained replies keep the endpoint lease until actual
-// work ends. Runtime policy is resolved once from the supplied startup snapshot.
+// The XRPC http.v1 host of the visualizer. One fixed domain worker owns the
+// handler: its handoff is bounded by the host admission limits and a retained
+// reply keeps the endpoint lease until the business work really ended.
+// `GET /v1/describe` is answered by the owner thread itself so that a call
+// holding `wait_ready_ms` never occupies the domain worker; the owner loop
+// re-evaluates the held calls on every iteration.
 class RpcServer {
  public:
-  RpcServer(std::string socket_path, RpcHandler handler, RpcOptions options,
-            std::function<void()> quiesce_native = {});
+  RpcServer(std::string socket_path, RpcHandler handler, DescribeProvider describe,
+            RpcOptions options, std::function<void()> quiesce_native = {});
   ~RpcServer();
-  static std::string newInstanceId();
 
   RpcServer(const RpcServer&) = delete;
   RpcServer& operator=(const RpcServer&) = delete;

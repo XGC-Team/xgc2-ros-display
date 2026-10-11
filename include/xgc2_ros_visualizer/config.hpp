@@ -1,14 +1,16 @@
 #pragma once
 
 #include <array>
-#include <memory>
 #include <string>
 #include <vector>
 #include <json/json.h>
-#include <xgc2_ros_visualizer/robot_roster.hpp>
 #include <xgc2_ros_visualizer/scene_contract.hpp>
 
 namespace xgc2_ros_visualizer {
+// A robot's kind selects its renderer and its row of the rate table. Global is
+// the row of everything that belongs to no concrete robot kind (standard TF
+// root, static frames, world boundary, readiness and robots that only publish
+// their description).
 enum class RateKind : std::size_t { Fs150, Scout, Mecanum, Global, Count };
 enum class Channel : std::size_t {
   PoseTf, JointTf, Markers, Scene, ScenePath, Path, ArPath, ArIdentity,
@@ -21,7 +23,13 @@ const char* kindName(RateKind kind);
 const char* channelName(Channel channel);
 RateKind parseKind(const std::string& name);
 RateKind rateKind(RobotModelKind kind);
+RobotModelKind modelKind(RateKind kind);
 bool applicable(RateKind kind, Channel channel);
+// A robot can override the channels of its own kind row, except the display
+// relay channels: relays belong to the instance, not to one robot.
+bool robotChannel(RateKind kind, Channel channel);
+
+// The per-kind table. It holds the defaults of every robot of that kind.
 struct Rates {
   std::array<std::array<double, kChannelCount>, kKindCount> values{};
   double get(RateKind kind, Channel channel) const;
@@ -29,39 +37,36 @@ struct Rates {
   Json::Value json() const;
 };
 Rates defaultRates();
-// Startup may overlay defaults; runtime PUT requires the complete table.
+// The runtime table is always replaced as a whole.
 Rates parseRates(const Json::Value& value, bool complete);
+
+// Rates of one robot that differ from its kind row. A zero follows the table.
+struct RateOverrides {
+  std::array<double, kChannelCount> values{};
+  double get(Channel channel, double inherited) const;
+  double maximum() const;
+  bool empty() const;
+  Json::Value json() const;
+  bool operator==(const RateOverrides& other) const { return values == other.values; }
+  bool operator!=(const RateOverrides& other) const { return !(*this == other); }
+};
+// Strict: unknown or non-overridable channels and rates outside 0.1..1000 Hz fail.
+RateOverrides parseRateOverrides(RateKind kind, const Json::Value& value);
+
 Json::Value parseJson(const std::string& text);
 std::string jsonText(const Json::Value& value);
 
+// A byte-preserving copy of one source topic below /xgc/display. Its rate comes
+// from the kind row of the robot that owns the source.
 struct RelayConfig {
   std::string source, topic, message_type;
   RateKind kind;
   Channel channel;
+  bool operator==(const RelayConfig& other) const {
+    return source == other.source && topic == other.topic && message_type == other.message_type &&
+        kind == other.kind && channel == other.channel;
+  }
 };
-std::vector<RelayConfig> parseRelays(const Json::Value& value);
-
-struct Settings {
-  std::string frame_id{"world"}, scene_topic{"/xgc/scene"}, transform_topic{"/xgc/tf"};
-  std::array<std::set<std::string>, 3> models;
-  SceneLabelStyle label_style;
-  SceneLabelOffsets label_offsets;
-  WorldBoundaryDisplayMode boundary_mode{WorldBoundaryDisplayMode::kWalls};
-  bool publish_markers{false}, publish_transforms{true}, publish_scene{true};
-  bool publish_scene_paths{false}, publish_paths{true};
-  bool track_ugv{true};
-  double pose_timeout{0.5}, state_timeout{2.0}, motion_timeout{0.5};
-  double rotor_ground{25.0}, rotor_transition{90.0}, rotor_airborne{60.0};
-  double uav_mesh_scale{1.0}, scout_mesh_scale{1.0}, mecanum_mesh_scale{0.001};
-  double wheel_radius{0.08}, track_width{0.416}, wheel_deadband{0.02}, wheel_max_speed{35.0};
-};
-struct InstanceConfig {
-  Json::Value original;
-  Settings settings;
-  WorldBoundaryDisplay boundary;
-  std::vector<xgc2_ros_visualizer::RobotDescription> robots, descriptions;
-  std::vector<RelayConfig> relays;
-};
-InstanceConfig parseInstance(const Json::Value& value);
-RobotModelKind modelKind(const Settings& settings, const std::string& model);
+RelayConfig relayConfig(const std::string& source, const std::string& topic,
+                      const std::string& message_type, RateKind kind);
 } // namespace xgc2_ros_visualizer

@@ -21,19 +21,20 @@ class Description::Impl {
     sensor_msgs::JointStateConstPtr latest;
     std::uint64_t generation{0};
   };
-  Impl(xgc2_ros_visualizer::RobotDescription configured,RateKind category)
-      : robot(std::move(configured)),rate_kind(category),input(new Input) {
-    parameter=robot.ros_namespace+"/visual_robot_description";
-    const auto root=ros::package::getPath(robot.description_package);
-    if (root.empty()) throw std::invalid_argument("installed description package unavailable: "+robot.description_package);
-    std::ifstream file(root+"/"+robot.description_file,std::ios::binary);
-    if (!file) throw std::invalid_argument("installed description file unavailable: "+robot.description_file);
+  explicit Impl(const RobotProfile& configured)
+      : name(configured.id),ros_namespace(configured.rosNamespace()),state_publisher(configured.description.state_publisher),
+        joint_state_topic(configured.description.joint_state_topic),input(new Input) {
+    parameter=ros_namespace+"/visual_robot_description";
+    const auto root=ros::package::getPath(configured.description.package);
+    if (root.empty()) throw std::invalid_argument("installed description package unavailable: "+configured.description.package);
+    std::ifstream file(root+"/"+configured.description.file,std::ios::binary);
+    if (!file) throw std::invalid_argument("installed description file unavailable: "+configured.description.file);
     file.seekg(0,std::ios::end); auto bytes=file.tellg(); file.seekg(0);
     if (bytes<=0 || bytes>4*1024*1024) throw std::invalid_argument("URDF must be nonempty and <=4 MiB");
     xml.resize(static_cast<std::size_t>(bytes)); file.read(&xml[0],bytes);
     urdf::Model model;
     if (!file || !model.initString(xml) || model.joints_.size()>2048) throw std::invalid_argument("invalid or oversized visual URDF");
-    if (!robot.robot_state_publisher) return;
+    if (!state_publisher) return;
     // Preserve the original RSP tf_prefix=<roster name>, outside scene SDK frames.
     for (const auto& pair:model.joints_) {
       if (pair.second->type==urdf::Joint::FIXED) fixed.push_back(transform(*pair.second,0,ros::Time(0)));
@@ -50,13 +51,14 @@ class Description::Impl {
     else if (joint.type==urdf::Joint::PRISMATIC) motion.setOrigin(tf2::Vector3(joint.axis.x,joint.axis.y,joint.axis.z)*position);
     value*=motion;
     geometry_msgs::TransformStamped result;
-    result.header.frame_id=robot.name+"/"+joint.parent_link_name; result.child_frame_id=robot.name+"/"+joint.child_link_name; result.header.stamp=stamp;
+    result.header.frame_id=name+"/"+joint.parent_link_name; result.child_frame_id=name+"/"+joint.child_link_name; result.header.stamp=stamp;
     result.transform.translation.x=value.getOrigin().x(); result.transform.translation.y=value.getOrigin().y(); result.transform.translation.z=value.getOrigin().z();
     result.transform.rotation.x=value.getRotation().x(); result.transform.rotation.y=value.getRotation().y(); result.transform.rotation.z=value.getRotation().z(); result.transform.rotation.w=value.getRotation().w();
     return result;
   }
-  xgc2_ros_visualizer::RobotDescription robot;
-  RateKind rate_kind;
+  std::string name,ros_namespace;
+  bool state_publisher;
+  std::string joint_state_topic;
   std::string parameter,xml;
   std::shared_ptr<Input> input;
   ros::Subscriber subscriber;
@@ -66,17 +68,16 @@ class Description::Impl {
   ros::Time joint_stamp;
   bool parameters_set{false};
 };
-Description::Description(xgc2_ros_visualizer::RobotDescription robot,RateKind kind) : impl_(new Impl(std::move(robot),kind)) {}
+Description::Description(const RobotProfile& profile) : impl_(new Impl(profile)) {}
 Description::~Description() { stop(); }
 const std::string& Description::parameter() const { return impl_->parameter; }
-RateKind Description::kind() const { return impl_->rate_kind; }
-bool Description::statePublisher() const { return impl_->robot.robot_state_publisher; }
+bool Description::statePublisher() const { return impl_->state_publisher; }
 void Description::activate(InputPool& pool) {
   ros::NodeHandle node; node.setParam(impl_->parameter,impl_->xml); impl_->parameters_set=true;
   if (!statePublisher()) return;
-  node.setParam(impl_->robot.ros_namespace+"/robot_description",impl_->xml);
+  node.setParam(impl_->ros_namespace+"/robot_description",impl_->xml);
   auto input=impl_->input;
-  const auto topic=impl_->robot.ros_namespace+"/"+impl_->robot.joint_state_topic;
+  const auto topic=impl_->ros_namespace+"/"+impl_->joint_state_topic;
   auto source=pool.node(topic);
   impl_->subscriber=source.subscribe<sensor_msgs::JointState>(topic,1,[input](const sensor_msgs::JointStateConstPtr& message) {
     if (message->name.size()!=message->position.size() || message->name.size()>2048) return;
@@ -110,7 +111,7 @@ void Description::stop() {
   ros::NodeHandle node;
   std::string current;
   if(node.getParam(impl_->parameter,current)&&current==impl_->xml)node.deleteParam(impl_->parameter);
-  const auto standard=impl_->robot.ros_namespace+"/robot_description";
+  const auto standard=impl_->ros_namespace+"/robot_description";
   if(statePublisher()&&node.getParam(standard,current)&&current==impl_->xml)node.deleteParam(standard);
   impl_->parameters_set=false;
 }
