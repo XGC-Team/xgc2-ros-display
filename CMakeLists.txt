@@ -5,7 +5,7 @@ find_package(catkin REQUIRED COMPONENTS roscpp roslib urdf sensor_msgs nav_msgs 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(JSONCPP REQUIRED IMPORTED_TARGET jsoncpp)
 find_package(Threads REQUIRED)
-find_package(XgcXrpc 0.1 CONFIG REQUIRED COMPONENTS http)
+find_package(XgcXrpc 0.2 CONFIG REQUIRED COMPONENTS http)
 catkin_package(INCLUDE_DIRS include LIBRARIES xgc2_ros_visualizer_contract xgc2_ros_visualizer_runtime
   CATKIN_DEPENDS roscpp roslib urdf sensor_msgs nav_msgs geometry_msgs foxglove_msgs mavros_msgs
   std_msgs tf2_ros visualization_msgs DEPENDS JSONCPP)

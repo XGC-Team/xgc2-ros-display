@@ -89,6 +89,13 @@ TEST_F(RpcTransportTest, DiscoversTheProviderAndFencesEveryDomainRequest) {
   EXPECT_EQ("test-incarnation", described["instance_id"].asString());
   EXPECT_EQ("xgc2.visualization", described["service"].asString());
   EXPECT_TRUE(described["ready"].asBool()); EXPECT_EQ(7, described["facts"]["marker"].asInt());
+  discovery.target = "/v1/describe?wait_ready_ms=0";
+  EXPECT_EQ(200, unbound.call(discovery, xgc2::xrpc::Clock::now() + seconds(2)).status);
+  for (const auto* target : {"/v1/status", "/v1/rates", "/v1/instances/a", "/v1/instances/a/robots/uav1",
+                             "/v1/instances/a/robots/uav1/rates", "/v1/describe/more"}) {
+    discovery.target = target;
+    EXPECT_EQ(409, unbound.call(discovery, xgc2::xrpc::Clock::now() + seconds(2)).status) << target;
+  }
   discovery.target = "/v1/status";
   EXPECT_EQ(409, unbound.call(discovery, xgc2::xrpc::Clock::now() + seconds(2)).status);
   xgc2::xrpc::HttpClient stale(path_, {}, "old-incarnation");
@@ -107,14 +114,16 @@ TEST_F(RpcTransportTest, DescribeRejectsMalformedWaitsAndOtherMethods) {
 }
 TEST_F(RpcTransportTest, DescribeWaitsForReadinessWithoutOccupyingTheDomainWorker) {
   ready_ = false; start();
+  xgc2::xrpc::HttpClient unbound(path_);
+  xgc2::xrpc::HttpRequest discovery; discovery.method = "GET"; discovery.target = "/v1/describe";
   // Not ready, no wait: answered at once.
   auto now = steady_clock::now();
-  auto immediate = json(exchange("GET", "/v1/describe"));
+  auto immediate = json(unbound.call(discovery, xgc2::xrpc::Clock::now() + seconds(2)));
   EXPECT_FALSE(immediate["ready"].asBool()); EXPECT_LT(steady_clock::now() - now, milliseconds(300));
   // The held call returns when readiness arrives, not at the end of its wait.
   now = steady_clock::now();
   auto held = std::async(std::launch::async, [&] {
-    xgc2::xrpc::HttpClient waiter(path_, {}, "test-incarnation");
+    xgc2::xrpc::HttpClient waiter(path_);
     xgc2::xrpc::HttpRequest request; request.method = "GET"; request.target = "/v1/describe?wait_ready_ms=5000";
     return waiter.call(request, xgc2::xrpc::Clock::now() + seconds(8));
   });
@@ -129,7 +138,8 @@ TEST_F(RpcTransportTest, DescribeWaitsForReadinessWithoutOccupyingTheDomainWorke
   EXPECT_TRUE(json(held.get())["ready"].asBool());
   // A wait that elapses answers with the current document.
   ready_ = false; now = steady_clock::now();
-  const auto expired = json(exchange("GET", "/v1/describe?wait_ready_ms=200"));
+  discovery.target = "/v1/describe?wait_ready_ms=200";
+  const auto expired = json(unbound.call(discovery, xgc2::xrpc::Clock::now() + seconds(2)));
   EXPECT_FALSE(expired["ready"].asBool());
   EXPECT_GE(steady_clock::now() - now, milliseconds(190)); EXPECT_LT(steady_clock::now() - now, milliseconds(1500));
 }

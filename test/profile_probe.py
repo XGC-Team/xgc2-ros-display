@@ -114,7 +114,7 @@ def run(probe, definition):
     require(described['facts']['world_clock'] == 'simulation' and described['facts']['instances'] == 0,
             'describe facts are wrong')
     started = time.monotonic()
-    require(probe.rpc('GET', '/v1/describe?wait_ready_ms=2000')['ready'] and time.monotonic() - started < 1,
+    require(probe.rpc('GET', '/v1/describe?wait_ready_ms=2000', bound=False)['ready'] and time.monotonic() - started < 1,
             'a ready service held a describe call')
     probe.rpc('GET', '/v1/describe?wait_ready_ms=30001', expected=400)
     probe.rpc('GET', '/v1/health', expected=404)
@@ -308,6 +308,10 @@ def run(probe, definition):
     wait(lambda: not probe.rpc('GET', '/v1/describe')['ready'], 'a dead master was not reported', 8)
     require(probe.rpc('GET', '/v1/describe')['facts']['reason'] == 'ros master unreachable', 'wrong reason')
     require(probe.server.poll() is None, 'an unreachable master ended the server')
+    started = time.monotonic()
+    require(not probe.rpc('GET', '/v1/describe?wait_ready_ms=200', bound=False)['ready'],
+            'unbound discovery lost the unavailable master')
+    require(time.monotonic() - started >= .19, 'unbound discovery did not hold its readiness wait')
     probe.start_master()  # a new run on the same address
     wait(lambda: probe.server.poll() is not None, 'a replaced master did not end the server', 10)
     require(probe.server.returncode == 1 and not os.path.exists(probe.socket), 'a replaced master must fail the server')

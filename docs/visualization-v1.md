@@ -24,8 +24,8 @@ option fails startup before a socket exists.
 
 ## Readiness
 
-`GET /v1/describe` is the unbound discovery call (it needs no instance header)
-and returns the readiness envelope:
+`GET /v1/describe`, with or without `wait_ready_ms`, is the unbound discovery
+call (it needs no instance header) and returns the readiness envelope:
 
 ```json
 {"service":"xgc2.visualization","api_version":"1","instance_id":"<32 hex>","ready":true,
@@ -34,13 +34,15 @@ and returns the readiness envelope:
 ```
 
 `instance_id` is fresh on every process start. Every request carries one
-`X-Request-ID` and one `X-Xrpc-Timeout-Ms`; every call except plain discovery
+`X-Request-ID` and one `X-Xrpc-Timeout-Ms`; every non-discovery call
 also carries the instance in `X-Xrpc-Instance-ID` and is rejected with 409 when
 it differs, so a caller of a previous process can never reach the next one.
+A supplied instance header is verified on discovery calls too.
 
 `ready` is a fact of this process: it is bound to its ROS master and is not
 stopping. `facts.reason` names why it is not (`stopping`, `ros master
-unreachable`). `GET /v1/describe?wait_ready_ms=<0..30000>` (a bound call) holds
+unreachable`). `GET /v1/describe?wait_ready_ms=<0..30000>` is part of the
+unbound discovery call, with no instance header required. It holds
 the request without polling until `ready` is true, the wait elapses or the
 call's own deadline is near, and then answers with the current document. At
 most 16 calls are held; Stop answers them at once.

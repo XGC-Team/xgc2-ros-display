@@ -160,7 +160,7 @@ catkin_test_results build/test_results
 cmake --install build
 ```
 
-The control host uses the installed `XgcXrpc` 0.1 `http` component (C++17, plain
+The control host uses the installed `XgcXrpc` 0.2 `http` component (C++17, plain
 limit structs; nothing is read from the environment). The whole product builds
 as C++17 with the Focal compiler; the runtime and contract libraries stay C++14
 for their consumers. The SDK is not copied into this product.
